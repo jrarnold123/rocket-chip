@@ -38,7 +38,7 @@ verilog: $(sim_vsrcs)
 # Build rules
 #--------------------------------------------------------------------
 
-VCS = vcs -full64
+VCS = vcs -full64 -LDFLAGS -Wl,--no-as-needed
 
 VCS_OPTS = -notice -line +lint=all,noVCDE,noONGS,noUI -error=PCWM-L -timescale=1ns/10ps -quiet \
 	+rad +v2k +vcs+lic+wait \
