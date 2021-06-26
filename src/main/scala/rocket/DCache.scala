@@ -703,10 +703,12 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       }
     }
 
+    // ! ASSIGNMENTS FOR E CHANNEL
     // Finish TileLink transaction by issuing a GrantAck
     tl_out.e.valid := tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
     tl_out.e.bits := edge.GrantAck(tl_out.d.bits)
     assert(tl_out.e.fire() === (tl_out.d.fire() && d_first && grantIsCached))
+    // ! END ASSIGNMENTS FOR E CHANNEL
 
     // data refill
     // note this ready-valid signaling ignores E-channel backpressure, which
@@ -788,6 +790,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       replacer.way
     })
 
+    // ! ASSIGNMENTS FOR C CHANNEL
     // release
     val (c_first, c_last, releaseDone, c_count) = edge.count(tl_out_c)
     val releaseRejected = Wire(Bool())
@@ -800,13 +803,13 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val cleanReleaseMessage = edge.ProbeAck(b = probe_bits, reportPermissions = s2_report_param)
     val dirtyReleaseMessage = edge.ProbeAck(b = probe_bits, reportPermissions = s2_report_param, data = 0.U)
 
-    tl_out_c.valid := (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait)
+    tl_out_c.valid := (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait) // ! SilentDrop is true in our case
     tl_out_c.bits := nackResponseMessage
     val newCoh = Wire(init = probeNewCoh)
     releaseWay := s2_probe_way
 
     if (!usingDataScratchpad) {
-      when (s2_victimize) {
+      when (s2_victimize) { // ! VOLUNTARY PUTS
         assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
         val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
         release_state := Mux(s2_victim_dirty && !discard_line, s_voluntary_writeback,
@@ -814,7 +817,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
                         s_voluntary_write_meta))
         probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB)
       }
-      when (s2_probe) {
+      when (s2_probe) { // ! INVOLUNTARY FORFEITS
         val probeNack = Wire(init = true.B)
         when (s2_meta_error) {
           release_state := s_probe_retry
@@ -879,6 +882,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       tl_out_c.bits.data := s2_data_corrected
       tl_out_c.bits.corrupt := inWriteback && s2_data_error_uncorrectable
     }
+    // ! END ASSIGNMENTS FOR C CHANNEL
 
     tl_out_c.bits.user.lift(AMBAProt).foreach { x =>
       x.fetch       := false.B
@@ -924,7 +928,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     if (usingDataScratchpad) {
       assert(!(s2_valid_masked && s2_req.cmd.isOneOf(M_XLR, M_XSC)))
-    } else {
+    } else {  // ! this case
       ccover(tl_out.b.valid && !tl_out.b.ready, "BLOCK_B", "D$ B-channel blocked")
     }
 
