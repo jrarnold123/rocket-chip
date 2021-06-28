@@ -406,7 +406,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_valid_data_error = s2_valid_hit_pre_data_ecc_and_waw && s2_data_error
     val s2_valid_hit = s2_valid_hit_pre_data_ecc && !s2_data_error
     val s2_valid_miss = s2_valid_masked && s2_readwrite && !s2_meta_error && !s2_hit
-    val s2_uncached = !s2_pma.cacheable || s2_req.no_alloc && !s2_pma.must_alloc && !s2_hit_valid // ? never true in our case... no_alloc never seems to be assigned, so 0 by default
+    val s2_uncached = !s2_pma.cacheable || s2_req.no_alloc && !s2_pma.must_alloc && !s2_hit_valid // ! no_alloc never seems to be assigned, so 0 by default
     val s2_valid_cached_miss = s2_valid_miss && !s2_uncached && !uncachedInFlight.asUInt.orR
     dontTouch(s2_valid_cached_miss)
     val s2_want_victimize = Bool(!usingDataScratchpad) && (s2_valid_cached_miss || s2_valid_flush_line || s2_valid_data_error || s2_flush_valid)
@@ -593,7 +593,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) &&
         (cacheParams.acquireBeforeRelease && !release_ack_wait && release_queue_empty || !s2_victim_dirty)))
         // ! must not receive a kill signal from cpu
-        // ! must have either s2_valid_uncached_pending
+        // ! must have either s2_valid_uncached_pending (which I think is never true)
         // ! or cache miss where victim isn't dirty
         // ! if the system is waiting on a putAck, then it must not be for a block that goes in the same slot
         // ! note that acquireBeforeRelease is false in our case
@@ -620,12 +620,12 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     }
 
     // Set pending bits for outstanding TileLink transaction
-    val a_sel = UIntToOH(a_source, maxUncachedInFlight+mmioOffset) >> mmioOffset
+    val a_sel = UIntToOH(a_source, maxUncachedInFlight+mmioOffset) >> mmioOffset //a_source represented as a one-hot
     when (tl_out_a.fire()) {
       when (s2_uncached) {
         (a_sel.asBools zip (uncachedInFlight zip uncachedReqs)) foreach { case (s, (f, r)) =>
           when (s) {
-            f := Bool(true)
+            f := Bool(true) // ! uncachedInFlight = is true when an uncached request is sent && a_sel.asBools
             r := s2_req
             r.cmd := Mux(s2_write, Mux(s2_req.cmd === M_PWR, M_PWR, M_XWR), M_XRD)
           }
@@ -678,7 +678,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         (uncachedRespIdxOH.asBools zip uncachedInFlight) foreach { case (s, f) =>
           when (s && d_last) {
             assert(f, "An AccessAck was unexpected by the dcache.") // TODO must handle Ack coming back on same cycle!
-            f := false
+            f := false // ! if grant is received then message is no longer in flight, uncachedInFlight=false
           }
         }
         when (grantIsUncachedData) {
