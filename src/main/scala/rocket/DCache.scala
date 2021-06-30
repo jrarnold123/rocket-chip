@@ -559,6 +559,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     io.cpu.s2_nack_cause_raw := RegNext(s1_raw_hazard) || !(!s2_waw_hazard || s2_store_merge)
 
     // Prepare a TileLink request message that initiates a transaction
+
+    // ! A MESSAGE PREP
     val a_source = PriorityEncoder(~uncachedInFlight.asUInt << mmioOffset) // skip the MSHR
     val acquire_address = (s2_req.addr >> idxLSB) << idxLSB
     val access_address = s2_req.addr
@@ -585,22 +587,12 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       Wire(new TLBundleA(edge.bundle))
     }
 
+    // ! END A MESSAGE PREP
+
 
     // ! ASSIGNMENTS FOR A CHANNEL
-    tl_out_a.valid := !io.cpu.s2_kill &&
-      (s2_valid_uncached_pending ||
-        (s2_valid_cached_miss &&
-        !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) &&
-        (cacheParams.acquireBeforeRelease && !release_ack_wait && release_queue_empty || !s2_victim_dirty)))
-        // ! must not receive a kill signal from cpu
-        // ! must have either s2_valid_uncached_pending (which I think is never true)
-        // ! or cache miss where victim isn't dirty
-        // ! if the system is waiting on a putAck, then it must not be for a block that goes in the same slot
-        // ! note that acquireBeforeRelease is false in our case
-    tl_out_a.bits := Mux(!s2_uncached, acquire(s2_vaddr, s2_req.addr, s2_grow_param),
-      Mux(!s2_write, get,
-      Mux(s2_req.cmd === M_PWR, putpartial,
-      Mux(!s2_read, put, atomics))))
+    tl_out_a.valid := isAValid()
+    tl_out_a.bits := pickAMessage()
     // ! END ASSIGNMENTS FOR A CHANNEL
 
     // Drive APROT Bits
@@ -808,7 +800,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val newCoh = Wire(init = probeNewCoh)
     releaseWay := s2_probe_way
 
-    if (!usingDataScratchpad) {
+    if (!usingDataScratchpad) { // ! always enter this if statement
       when (s2_victimize) { // ! VOLUNTARY PUTS
         assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
         val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
@@ -821,7 +813,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         val probeNack = Wire(init = true.B)
         when (s2_meta_error) {
           release_state := s_probe_retry
-        }.elsewhen (s2_prb_ack_data) {
+        }.elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
           release_state := s_probe_rep_dirty
         }.elsewhen (s2_probe_state.isValid()) {
           tl_out_c.valid := true
@@ -834,7 +826,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }
         when (probeNack) { s1_nack := true }
       }
-      when (release_state === s_probe_retry) {
+      when (release_state === s_probe_retry) { // ! General probe FSM
         metaArb.io.in(6).valid := true
         metaArb.io.in(6).bits.idx := probeIdx(probe_bits)
         metaArb.io.in(6).bits.addr := Cat(io.cpu.req.bits.addr >> paddrBits, probe_bits.address)
@@ -1166,7 +1158,34 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         "MemorySystem;;Cache Memory Bit Flip Cross Covers"))
     }
 
+    ///////////////////////////////
+    // ! BEGIN MODIFICATIONS HERE//
+    ///////////////////////////////
+    
+    def isAValid() = {
+      !io.cpu.s2_kill &&
+        (s2_valid_uncached_pending ||
+          (s2_valid_cached_miss &&
+          !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) &&
+          (cacheParams.acquireBeforeRelease && !release_ack_wait && release_queue_empty || !s2_victim_dirty)))
+          // ! must not receive a kill signal from cpu
+          // ! must have either s2_valid_uncached_pending (which I think is never true)
+          // ! or cache miss where victim isn't dirty
+          // ! if the system is waiting on a putAck, then it must not be for a block that goes in the same slot
+          // ! note that acquireBeforeRelease is false in our case
+    }
+
+    def pickAMessage() = {
+      Mux(!s2_uncached, acquire(s2_vaddr, s2_req.addr, s2_grow_param),
+        Mux(!s2_write, get,
+        Mux(s2_req.cmd === M_PWR, putpartial,
+        Mux(!s2_read, put, atomics))))
+    }
+
   } // leaving gated-clock domain
+  /////////////////////////////
+  // ! END MODIFICATIONS HERE//
+  /////////////////////////////
 
 
 
