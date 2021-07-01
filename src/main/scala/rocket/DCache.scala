@@ -327,7 +327,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_tlb_xcpt = Reg(tlb.io.resp.cloneType)
     val s2_pma = Reg(tlb.io.resp.cloneType)
     val s2_uncached_resp_addr = Reg(s2_req.addr.cloneType) // should be DCE'd in synthesis
-    when (s1_valid_not_nacked || s1_flush_valid) { // ! MOVE TO NEXT STAGE
+    when (s1_valid_not_nacked || s1_flush_valid) { // ? Keep the pipeline moving (unless s1 was nacked and s2 happens to be flush, then do that)
       s2_req := s1_req
       s2_req.addr := s1_paddr
       s2_tlb_xcpt := tlb.io.resp
@@ -593,7 +593,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     // ! ASSIGNMENTS FOR A CHANNEL
     tl_out_a.valid := isAValid()
     tl_out_a.bits := pickAMessage()
-    // ! END ASSIGNMENTS FOR A CHANNEL
 
     // Drive APROT Bits
     tl_out_a.bits.user.lift(AMBAProt).foreach { x =>
@@ -610,6 +609,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       x.fetch       := false.B
       x.secure      := true.B
     }
+    // ! END ASSIGNMENTS FOR A CHANNEL
+
 
     // Set pending bits for outstanding TileLink transaction
     val a_sel = UIntToOH(a_source, maxUncachedInFlight+mmioOffset) >> mmioOffset //a_source represented as a one-hot
@@ -792,8 +793,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val releaseDataBeat = Cat(UInt(0), c_count) + Mux(releaseRejected, UInt(0), s1_release_data_valid + Cat(UInt(0), s2_release_data_valid))
 
     val nackResponseMessage = edge.ProbeAck(b = probe_bits, reportPermissions = TLPermissions.NtoN)
-    val cleanReleaseMessage = edge.ProbeAck(b = probe_bits, reportPermissions = s2_report_param)
-    val dirtyReleaseMessage = edge.ProbeAck(b = probe_bits, reportPermissions = s2_report_param, data = 0.U)
+    val cleanProbeAckMessage = edge.ProbeAck(b = probe_bits, reportPermissions = s2_report_param) 
+    val dirtyProbeAckMessage = edge.ProbeAck(b = probe_bits, reportPermissions = s2_report_param, data = 0.U)
+    val releaseMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param)._2
+    val releaseDataMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param, data = 0.U)._2
 
     tl_out_c.valid := (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait) // ! SilentDrop is true in our case
     tl_out_c.bits := nackResponseMessage
@@ -801,80 +804,14 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     releaseWay := s2_probe_way
 
     if (!usingDataScratchpad) { // ! always enter this if statement
-      when (s2_victimize) { // ! VOLUNTARY PUTS
-        assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
-        val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
-        release_state := Mux(s2_victim_dirty && !discard_line, s_voluntary_writeback,
-                        Mux(!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_flush_valid || s2_readwrite && !s2_hit_valid), s_voluntary_release,
-                        s_voluntary_write_meta))
-        probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB)
-      }
-      when (s2_probe) { // ! INVOLUNTARY FORFEITS
-        val probeNack = Wire(init = true.B)
-        when (s2_meta_error) {
-          release_state := s_probe_retry
-        }.elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
-          release_state := s_probe_rep_dirty
-        }.elsewhen (s2_probe_state.isValid()) {
-          tl_out_c.valid := true
-          tl_out_c.bits := cleanReleaseMessage
-          release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean)
-        }.otherwise {
-          tl_out_c.valid := true
-          probeNack := !releaseDone
-          release_state := Mux(releaseDone, s_ready, s_probe_rep_miss)
-        }
-        when (probeNack) { s1_nack := true }
-      }
-      when (release_state === s_probe_retry) { // ! General probe FSM
-        metaArb.io.in(6).valid := true
-        metaArb.io.in(6).bits.idx := probeIdx(probe_bits)
-        metaArb.io.in(6).bits.addr := Cat(io.cpu.req.bits.addr >> paddrBits, probe_bits.address)
-        when (metaArb.io.in(6).ready) {
-          release_state := s_ready
-          s1_probe := true
-        }
-      }
-      when (release_state === s_probe_rep_miss) {
-        tl_out_c.valid := true
-        when (releaseDone) { release_state := s_ready }
-      }
-      when (release_state === s_probe_rep_clean) {
-        tl_out_c.valid := true
-        tl_out_c.bits := cleanReleaseMessage
-        when (releaseDone) { release_state := s_probe_write_meta }
-      }
-      when (release_state === s_probe_rep_dirty) {
-        tl_out_c.bits := dirtyReleaseMessage
-        when (releaseDone) { release_state := s_probe_write_meta }
-      }
-      when (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
-        when (release_state === s_voluntary_release) {
-          tl_out_c.bits := edge.Release(fromSource = 0.U,
-                                        toAddress = 0.U,
-                                        lgSize = lgCacheBlockBytes,
-                                        shrinkPermissions = s2_shrink_param)._2
-        }.otherwise {
-          tl_out_c.bits := edge.Release(fromSource = 0.U,
-                                        toAddress = 0.U,
-                                        lgSize = lgCacheBlockBytes,
-                                        shrinkPermissions = s2_shrink_param,
-                                        data = 0.U)._2
-        }
-        newCoh := voluntaryNewCoh
-        releaseWay := s2_victim_or_hit_way
-        when (releaseDone) { release_state := s_voluntary_write_meta }
-        when (tl_out_c.fire() && c_first) {
-          release_ack_wait := true
-          release_ack_addr := probe_bits.address
-        }
-      }
+      voluntaryPut()
+      involuntaryForfeit()
+      probeFSM()
       tl_out_c.bits.source := probe_bits.source
       tl_out_c.bits.address := probe_bits.address
       tl_out_c.bits.data := s2_data_corrected
       tl_out_c.bits.corrupt := inWriteback && s2_data_error_uncorrectable
     }
-    // ! END ASSIGNMENTS FOR C CHANNEL
 
     tl_out_c.bits.user.lift(AMBAProt).foreach { x =>
       x.fetch       := false.B
@@ -885,6 +822,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       x.readalloc   := true.B
       x.writealloc  := true.B
     }
+    // ! END ASSIGNMENTS FOR C CHANNEL
 
     dataArb.io.in(2).valid := inWriteback && releaseDataBeat < refillCycles
     dataArb.io.in(2).bits := dataArb.io.in(1).bits
@@ -1161,6 +1099,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     ///////////////////////////////
     // ! BEGIN MODIFICATIONS HERE//
     ///////////////////////////////
+
+    // ! A CHANNEL STUFF HERE
     
     def isAValid() = {
       !io.cpu.s2_kill &&
@@ -1180,6 +1120,78 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         Mux(!s2_write, get,
         Mux(s2_req.cmd === M_PWR, putpartial,
         Mux(!s2_read, put, atomics))))
+    }
+
+    // ! C CHANNEL STUFF HERE
+
+    def voluntaryPut() = { // ! such as cache misses
+      when (s2_victimize) {
+        assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
+        val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
+        release_state := Mux(s2_victim_dirty && !discard_line, s_voluntary_writeback,
+                        Mux(!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_flush_valid || s2_readwrite && !s2_hit_valid), s_voluntary_release,
+                        s_voluntary_write_meta))
+        probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB)
+      }
+    }
+
+    def involuntaryForfeit() = {
+      when (s2_probe) {
+        val probeNack = Wire(init = true.B)
+        when (s2_meta_error) { // ? voodoo error in metacache
+          release_state := s_probe_retry
+        }.elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
+          release_state := s_probe_rep_dirty
+        }.elsewhen (s2_probe_state.isValid()) { // ? as long as this block is in metadata
+          tl_out_c.valid := true
+          tl_out_c.bits := cleanProbeAckMessage
+          release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean)
+        }.otherwise {  // ? this block is not in Metadata; has not been accessed before
+          tl_out_c.valid := true
+          probeNack := !releaseDone
+          release_state := Mux(releaseDone, s_ready, s_probe_rep_miss)
+        }
+        when (probeNack) { s1_nack := true } // ? seems to tell s1 stage to stall until release is done being processed
+      }
+    }
+
+    def probeFSM() = {
+      when (release_state === s_probe_retry) {
+        metaArb.io.in(6).valid := true
+        metaArb.io.in(6).bits.idx := probeIdx(probe_bits)
+        metaArb.io.in(6).bits.addr := Cat(io.cpu.req.bits.addr >> paddrBits, probe_bits.address)
+        when (metaArb.io.in(6).ready) {
+          release_state := s_ready
+          s1_probe := true
+        }
+      }
+      when (release_state === s_probe_rep_miss) {
+        tl_out_c.valid := true
+        when (releaseDone) { release_state := s_ready }
+      }
+      when (release_state === s_probe_rep_clean) {
+        tl_out_c.valid := true
+        tl_out_c.bits := cleanProbeAckMessage
+        when (releaseDone) { release_state := s_probe_write_meta }
+      }
+      when (release_state === s_probe_rep_dirty) {
+        tl_out_c.bits := dirtyProbeAckMessage
+        when (releaseDone) { release_state := s_probe_write_meta }
+      }
+      when (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
+        when (release_state === s_voluntary_release) {
+          tl_out_c.bits := releaseMessage
+        }.otherwise {
+          tl_out_c.bits := releaseDataMessage
+        }
+        newCoh := voluntaryNewCoh
+        releaseWay := s2_victim_or_hit_way
+        when (releaseDone) { release_state := s_voluntary_write_meta }
+        when (tl_out_c.fire() && c_first) {
+          release_ack_wait := true
+          release_ack_addr := probe_bits.address
+        }
+      }
     }
 
   } // leaving gated-clock domain
