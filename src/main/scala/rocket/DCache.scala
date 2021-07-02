@@ -156,7 +156,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     }
 
 
-    val (tl_out_c, release_queue_empty) = // ! (tl_out.c, true.B)
+    val (tl_out_c, release_queue_empty) = // ! this evaluates to (tl_out.c, true.B)
       if (cacheParams.acquireBeforeRelease) { // ! false
         val q = Module(new Queue(tl_out.c.bits.cloneType, cacheDataBeats, flow = true))
         tl_out.c <> q.io.deq
@@ -591,8 +591,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
 
     // ! ASSIGNMENTS FOR A CHANNEL
-    tl_out_a.valid := isAValid()
-    tl_out_a.bits := pickAMessage()
+    FSMChannelA()
 
     // Drive APROT Bits
     tl_out_a.bits.user.lift(AMBAProt).foreach { x =>
@@ -611,7 +610,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     }
     // ! END ASSIGNMENTS FOR A CHANNEL
 
-
+    // ! A CHANNEL IN FLIGHT STUFF
     // Set pending bits for outstanding TileLink transaction
     val a_sel = UIntToOH(a_source, maxUncachedInFlight+mmioOffset) >> mmioOffset //a_source represented as a one-hot
     when (tl_out_a.fire()) {
@@ -628,6 +627,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         refill_way := s2_victim_or_hit_way
       }
     }
+    // ! END A CHANNEL IN FLIGHT STUFF
 
     // grant
     val (d_first, d_last, d_done, d_address_inc) = edge.addr_inc(tl_out.d)
@@ -698,9 +698,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     // ! ASSIGNMENTS FOR E CHANNEL
     // Finish TileLink transaction by issuing a GrantAck
-    tl_out.e.valid := tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
-    tl_out.e.bits := edge.GrantAck(tl_out.d.bits)
-    assert(tl_out.e.fire() === (tl_out.d.fire() && d_first && grantIsCached))
+    sendEMessage(edge.GrantAck(tl_out.d.bits), tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant)
+
     // ! END ASSIGNMENTS FOR E CHANNEL
 
     // data refill
@@ -798,8 +797,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val releaseMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param)._2
     val releaseDataMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param, data = 0.U)._2
 
-    tl_out_c.valid := (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait) // ! SilentDrop is true in our case
-    tl_out_c.bits := nackResponseMessage
+    sendCMessage(nackResponseMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))  // ! NOTE: SilentDrop is true in our case)
+
     val newCoh = Wire(init = probeNewCoh)
     releaseWay := s2_probe_way
 
@@ -1115,11 +1114,23 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           // ! note that acquireBeforeRelease is false in our case
     }
 
-    def pickAMessage() = {
-      Mux(!s2_uncached, acquire(s2_vaddr, s2_req.addr, s2_grow_param),
-        Mux(!s2_write, get,
-        Mux(s2_req.cmd === M_PWR, putpartial,
-        Mux(!s2_read, put, atomics))))
+    def FSMChannelA() = {
+      when (!s2_uncached) {
+        sendAMessage(acquire(s2_vaddr, s2_req.addr, s2_grow_param))
+      } .elsewhen (!s2_write) {
+        sendAMessage(get)
+      } .elsewhen (s2_req.cmd === M_PWR) {
+        sendAMessage(putpartial)
+      } .elsewhen (!s2_read) {
+        sendAMessage(put)
+      } .otherwise {
+        sendAMessage(atomics)
+      }
+    }
+
+    def sendAMessage(messageToSend: TLBundleA) = {
+      tl_out_a.valid := isAValid()
+      tl_out_a.bits := messageToSend
     }
 
     // ! C CHANNEL STUFF HERE
@@ -1143,11 +1154,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }.elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
           release_state := s_probe_rep_dirty
         }.elsewhen (s2_probe_state.isValid()) { // ? as long as this block is in metadata
-          tl_out_c.valid := true
-          tl_out_c.bits := cleanProbeAckMessage
+          sendCMessage(cleanProbeAckMessage, true.B)
           release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean)
         }.otherwise {  // ? this block is not in Metadata; has not been accessed before
-          tl_out_c.valid := true
+          sendCMessage(nackResponseMessage, true.B) // ? possibly not the right message, but definitely valid bit
           probeNack := !releaseDone
           release_state := Mux(releaseDone, s_ready, s_probe_rep_miss)
         }
@@ -1166,23 +1176,22 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }
       }
       when (release_state === s_probe_rep_miss) {
-        tl_out_c.valid := true
+        sendCMessage(nackResponseMessage, true.B) // ? possibly not the right change, and probably redundant... definitely valid = true.B though
         when (releaseDone) { release_state := s_ready }
       }
       when (release_state === s_probe_rep_clean) {
-        tl_out_c.valid := true
-        tl_out_c.bits := cleanProbeAckMessage
+        sendCMessage(cleanProbeAckMessage, true.B)
         when (releaseDone) { release_state := s_probe_write_meta }
       }
       when (release_state === s_probe_rep_dirty) {
-        tl_out_c.bits := dirtyProbeAckMessage
+        sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         when (releaseDone) { release_state := s_probe_write_meta }
       }
       when (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
         when (release_state === s_voluntary_release) {
-          tl_out_c.bits := releaseMessage
+          sendCMessage(releaseMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }.otherwise {
-          tl_out_c.bits := releaseDataMessage
+          sendCMessage(releaseDataMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }
         newCoh := voluntaryNewCoh
         releaseWay := s2_victim_or_hit_way
@@ -1192,6 +1201,19 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_ack_addr := probe_bits.address
         }
       }
+    }
+
+    def sendCMessage(messageToSend: TLBundleC, valid: Bool) = { //sets default valid signal to not change, unless explicitly asked to change
+      tl_out_c.valid := valid
+      tl_out_c.bits := messageToSend
+    }
+
+    //E CHANNEL STUFF HERE
+
+    def sendEMessage(messageToSend: TLBundleE, valid: Bool) = {
+      tl_out.e.valid := valid
+      tl_out.e.bits := messageToSend
+      assert(tl_out.e.fire() === (tl_out.d.fire() && d_first && grantIsCached))
     }
 
   } // leaving gated-clock domain
