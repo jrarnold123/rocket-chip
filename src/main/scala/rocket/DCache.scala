@@ -591,8 +591,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
 
     // ! ASSIGNMENTS FOR A CHANNEL
-    tl_out_a.valid := isAValid()
-    tl_out_a.bits := pickAMessage()
+    FSMChannelA()
 
     // Drive APROT Bits
     tl_out_a.bits.user.lift(AMBAProt).foreach { x =>
@@ -698,8 +697,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     // ! ASSIGNMENTS FOR E CHANNEL
     // Finish TileLink transaction by issuing a GrantAck
-    tl_out.e.valid := tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
-    tl_out.e.bits := edge.GrantAck(tl_out.d.bits)
+    FSMChannelE()
     assert(tl_out.e.fire() === (tl_out.d.fire() && d_first && grantIsCached))
     // ! END ASSIGNMENTS FOR E CHANNEL
 
@@ -1115,39 +1113,59 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           // ! note that acquireBeforeRelease is false in our case
     }
 
-    def pickAMessage() = {
-      Mux(!s2_uncached, acquire(s2_vaddr, s2_req.addr, s2_grow_param),
-        Mux(!s2_write, get,
-        Mux(s2_req.cmd === M_PWR, putpartial,
-        Mux(!s2_read, put, atomics))))
+    def FSMChannelA() = {
+      when (!s2_uncached && isAValid()) {  // state 1
+        sendAMessage(acquire(s2_vaddr, s2_req.addr, s2_grow_param)) // case for all edges in state 1
+      } .elsewhen (isAValid()) { // state 2
+        when (!s2_write) { //edge 1 state 2
+          sendAMessage(get)
+        } .elsewhen (s2_req.cmd === M_PWR) {  // edge 2 state 2
+          sendAMessage(putpartial)
+        } .elsewhen (!s2_read) { // edge 3 state 2
+          sendAMessage(put)
+        } .otherwise {   // edge 4 state 2
+          sendAMessage(atomics)
+        }
+      } .otherwise { // state 3
+        tl_out_a.valid := false.B
+      }
+    }
+
+    def sendAMessage(messageToSend: TLBundleA) = {
+      tl_out_a.valid := true.B
+      tl_out_a.bits := messageToSend
     }
 
     // ! C CHANNEL STUFF HERE
 
     def voluntaryPut() = { // ! such as cache misses
-      when (s2_victimize) {
+      when (s2_victimize) { // edge 1
         assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
         val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
-        release_state := Mux(s2_victim_dirty && !discard_line, s_voluntary_writeback,
-                        Mux(!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_flush_valid || s2_readwrite && !s2_hit_valid), s_voluntary_release,
-                        s_voluntary_write_meta))
+        when (s2_victim_dirty && !discard_line) { // edge 1 state 1
+          release_state := s_voluntary_writeback
+        } .elsewhen (!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_flush_valid || s2_readwrite && !s2_hit_valid)) { // edge 1 state 2
+          release_state := s_voluntary_release
+        } .otherwise { // edge 1 state 3
+          release_state := s_voluntary_write_meta
+        }
         probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB)
       }
     }
 
+
     def involuntaryForfeit() = {
-      when (s2_probe) {
+      when (s2_probe) { // edge 2
         val probeNack = Wire(init = true.B)
         when (s2_meta_error) { // ? voodoo error in metacache
           release_state := s_probe_retry
-        }.elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
+        } .elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
           release_state := s_probe_rep_dirty
-        }.elsewhen (s2_probe_state.isValid()) { // ? as long as this block is in metadata
-          tl_out_c.valid := true
-          tl_out_c.bits := cleanProbeAckMessage
+        } .elsewhen (s2_probe_state.isValid()) { // ? as long as this block is in metadata
+          sendCMessage(cleanProbeAckMessage, true.B)
           release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean)
-        }.otherwise {  // ? this block is not in Metadata; has not been accessed before
-          tl_out_c.valid := true
+        } .otherwise {  // ? this block is not in Metadata; has not been accessed before
+          sendCMessage(nackResponseMessage, true.B) // ? possibly not the right message, but definitely valid bit
           probeNack := !releaseDone
           release_state := Mux(releaseDone, s_ready, s_probe_rep_miss)
         }
@@ -1166,23 +1184,22 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }
       }
       when (release_state === s_probe_rep_miss) {
-        tl_out_c.valid := true
+        sendCMessage(nackResponseMessage, true.B) // ? possibly not the right change, and probably redundant... definitely valid = true.B though
         when (releaseDone) { release_state := s_ready }
       }
       when (release_state === s_probe_rep_clean) {
-        tl_out_c.valid := true
-        tl_out_c.bits := cleanProbeAckMessage
+        sendCMessage(cleanProbeAckMessage, true.B)
         when (releaseDone) { release_state := s_probe_write_meta }
       }
       when (release_state === s_probe_rep_dirty) {
-        tl_out_c.bits := dirtyProbeAckMessage
+        sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         when (releaseDone) { release_state := s_probe_write_meta }
       }
       when (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
         when (release_state === s_voluntary_release) {
-          tl_out_c.bits := releaseMessage
+          sendCMessage(releaseMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }.otherwise {
-          tl_out_c.bits := releaseDataMessage
+          sendCMessage(releaseDataMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }
         newCoh := voluntaryNewCoh
         releaseWay := s2_victim_or_hit_way
@@ -1192,6 +1209,24 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_ack_addr := probe_bits.address
         }
       }
+    }
+
+    def sendCMessage(messageToSend: TLBundleC, valid: Bool) = {
+      tl_out_c.valid := valid
+      tl_out_c.bits := messageToSend
+    }
+
+    //E CHANNEL STUFF HERE
+
+    // I have absolutely no clue why I can't turn this into an FSM.  The test harness keeps crashing and I can't figure out why.  Four hours down the drain
+    def FSMChannelE() = {
+      tl_out.e.valid := tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
+      tl_out.e.bits := edge.GrantAck(tl_out.d.bits)
+    }
+
+    def sendEMessage(messageToSend: TLBundleE, valid: Bool) = { // totally unused because of weird test harness thing
+      tl_out.e.valid := valid
+      tl_out.e.bits := messageToSend
     }
 
   } // leaving gated-clock domain
