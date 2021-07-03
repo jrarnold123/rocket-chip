@@ -796,15 +796,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val releaseMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param)._2
     val releaseDataMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param, data = 0.U)._2
 
+
+    // CONSIDER DELETING THIS IN FAVOR OF THE OTHERWISE STATEMENT IN FSM
     tl_out_c.valid := (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait) // ! SilentDrop is true in our case
     tl_out_c.bits := nackResponseMessage
     val newCoh = Wire(init = probeNewCoh)
     releaseWay := s2_probe_way
 
     if (!usingDataScratchpad) { // ! always enter this if statement
-      voluntaryPut()
-      involuntaryForfeit()
-      probeFSM()
+      FSMChannelC()
       tl_out_c.bits.source := probe_bits.source
       tl_out_c.bits.address := probe_bits.address
       tl_out_c.bits.data := s2_data_corrected
@@ -1096,7 +1096,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     ///////////////////////////////
     // ! BEGIN MODIFICATIONS HERE//
-    ///////////////////////////////
+    //////////////////////////////
 
     // ! A CHANNEL STUFF HERE
     
@@ -1107,7 +1107,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) &&
           (cacheParams.acquireBeforeRelease && !release_ack_wait && release_queue_empty || !s2_victim_dirty)))
           // ! must not receive a kill signal from cpu
-          // ! must have either s2_valid_uncached_pending (which I think is never true)
+          // ! must have either s2_valid_uncached_pending
           // ! or cache miss where victim isn't dirty
           // ! if the system is waiting on a putAck, then it must not be for a block that goes in the same slot
           // ! note that acquireBeforeRelease is false in our case
@@ -1138,7 +1138,13 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     // ! C CHANNEL STUFF HERE
 
-    def voluntaryPut() = { // ! such as cache misses
+    def FSMChannelC() = {
+      updateStateC()
+      probeFSM()
+    }
+
+    def updateStateC() = {
+      // s2_victimize and s2_probe seem to be mutually exclusive in test cases... not sure if this is universal or not
       when (s2_victimize) { // edge 1
         assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
         val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
@@ -1151,21 +1157,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }
         probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB)
       }
-    }
-
-
-    def involuntaryForfeit() = {
-      when (s2_probe) { // edge 2
+      when (s2_probe) {                                                                     // edge 2
         val probeNack = Wire(init = true.B)
-        when (s2_meta_error) { // ? voodoo error in metacache
+        when (s2_meta_error) { // ? error in metacache                               edge 2 state 1
           release_state := s_probe_retry
-        } .elsewhen (s2_prb_ack_data) {  // ! if it has dirty data
+        } .elsewhen (s2_prb_ack_data) {  // ! if it has dirty data                          edge 2 state 2
           release_state := s_probe_rep_dirty
-        } .elsewhen (s2_probe_state.isValid()) { // ? as long as this block is in metadata
-          sendCMessage(cleanProbeAckMessage, true.B)
-          release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean)
+        } .elsewhen (s2_probe_state.isValid()) { // ? as long as this block is in metadata  edge 2 state 3
+          release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean)          //edge 2 state 4+
         } .otherwise {  // ? this block is not in Metadata; has not been accessed before
-          sendCMessage(nackResponseMessage, true.B) // ? possibly not the right message, but definitely valid bit
           probeNack := !releaseDone
           release_state := Mux(releaseDone, s_ready, s_probe_rep_miss)
         }
@@ -1182,20 +1182,16 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_state := s_ready
           s1_probe := true
         }
-      }
-      when (release_state === s_probe_rep_miss) {
-        sendCMessage(nackResponseMessage, true.B) // ? possibly not the right change, and probably redundant... definitely valid = true.B though
+      } .elsewhen (release_state === s_probe_rep_miss) {
+        sendCMessage(nackResponseMessage, true.B)
         when (releaseDone) { release_state := s_ready }
-      }
-      when (release_state === s_probe_rep_clean) {
+      } .elsewhen (release_state === s_probe_rep_clean) {
         sendCMessage(cleanProbeAckMessage, true.B)
         when (releaseDone) { release_state := s_probe_write_meta }
-      }
-      when (release_state === s_probe_rep_dirty) {
+      } .elsewhen (release_state === s_probe_rep_dirty) {
         sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         when (releaseDone) { release_state := s_probe_write_meta }
-      }
-      when (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
+      } .elsewhen (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
         when (release_state === s_voluntary_release) {
           sendCMessage(releaseMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }.otherwise {
@@ -1208,6 +1204,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_ack_wait := true
           release_ack_addr := probe_bits.address
         }
+      } .otherwise {
+        sendCMessage(nackResponseMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
       }
     }
 
@@ -1218,8 +1216,11 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     //E CHANNEL STUFF HERE
 
-    // I have absolutely no clue why I can't turn this into an FSM.  The test harness keeps crashing and I can't figure out why.  Four hours down the drain
+    // I have absolutely no clue why I can't turn this into an FSM.  The test harness keeps crashing and I can't figure out why.  Seven hours down the drain (and counting)
+    // Regardless, E channel is borderline unused in TileLink... the only info sent is a slave sink ID... 
+    // I don't like it, but maybe this is permanently a separate item from the rest of the FSM?  Like "whenever a d message is received, sendGrantAck() and the valid bits are determined the same way"
     def FSMChannelE() = {
+      //sendEMessage(edge.GrantAck(tl_out.d.bits), tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant) // even this doesn't work???
       tl_out.e.valid := tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
       tl_out.e.bits := edge.GrantAck(tl_out.d.bits)
     }
