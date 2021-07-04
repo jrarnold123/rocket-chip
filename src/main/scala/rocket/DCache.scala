@@ -697,6 +697,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     // ! ASSIGNMENTS FOR E CHANNEL
     // Finish TileLink transaction by issuing a GrantAck
+    val tl_out_e = tl_out.e
+    val grantAck = edge.GrantAck(tl_out.d.bits)
+    val temp = tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
     FSMChannelE()
     assert(tl_out.e.fire() === (tl_out.d.fire() && d_first && grantIsCached))
     // ! END ASSIGNMENTS FOR E CHANNEL
@@ -1144,7 +1147,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     }
 
     def updateStateC() = {
-      // s2_victimize and s2_probe seem to be mutually exclusive in test cases... not sure if this is universal or not
+      // s2_victimize and s2_probe seem to be mutually exclusive in test cases... not sure if this is universal or not... elsewhen might not be safe to use here
       when (s2_victimize) { // edge 1
         assert(s2_valid_flush_line || s2_flush_valid || io.cpu.s2_nack)
         val discard_line = s2_valid_flush_line && s2_req.size(1) || s2_flush_valid && flushing_req.size(1)
@@ -1156,8 +1159,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_state := s_voluntary_write_meta
         }
         probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB)
-      }
-      when (s2_probe) {                                                                     // edge 2
+      } .elsewhen (s2_probe) {                                                                     // edge 2
         val probeNack = Wire(init = true.B)
         when (s2_meta_error) { // ? error in metacache                               edge 2 state 1
           release_state := s_probe_retry
@@ -1216,18 +1218,17 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     //E CHANNEL STUFF HERE
 
-    // I have absolutely no clue why I can't turn this into an FSM.  The test harness keeps crashing and I can't figure out why.  Seven hours down the drain (and counting)
-    // Regardless, E channel is borderline unused in TileLink... the only info sent is a slave sink ID... 
-    // I don't like it, but maybe this is permanently a separate item from the rest of the FSM?  Like "whenever a d message is received, sendGrantAck() and the valid bits are determined the same way"
     def FSMChannelE() = {
-      //sendEMessage(edge.GrantAck(tl_out.d.bits), tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant) // even this doesn't work???
-      tl_out.e.valid := tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant
-      tl_out.e.bits := edge.GrantAck(tl_out.d.bits)
+      when (tl_out.d.valid && d_first && grantIsCached && canAcceptCachedGrant) {
+        sendEMessage(grantAck, true.B)
+      } .otherwise {
+        sendEMessage(grantAck, false.B)
+      }
     }
 
-    def sendEMessage(messageToSend: TLBundleE, valid: Bool) = { // totally unused because of weird test harness thing
-      tl_out.e.valid := valid
-      tl_out.e.bits := messageToSend
+    def sendEMessage(messageToSend: TLBundleE, valid: Bool) = {
+      tl_out_e.valid := valid
+      tl_out_e.bits := messageToSend
     }
 
   } // leaving gated-clock domain
