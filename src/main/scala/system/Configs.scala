@@ -24,7 +24,7 @@ class BaseConfig extends Config(
 class DefaultConfig extends Config(new WithNBigCores(1) ++ new WithCoherentBusTopology ++ new BaseConfig)
 
 class DefaultBufferlessConfig extends Config(new WithBufferlessBroadcastHub ++ new DefaultConfig)
-class DefaultSmallConfig extends Config(new WithNSmallCores(1) ++ new WithCoherentBusTopology ++ new BaseConfig)
+class DefaultSmallConfig extends Config(new WithNSmallCores(2) ++ new WithCoherentBusTopology ++ new BaseConfig) // jamesTODO: changed withNSmallCores to 2, maybe breaks
 class DefaultRV32Config extends Config(new WithRV32 ++ new DefaultConfig)
 
 class DualBankConfig extends Config(new WithNBanks(2) ++ new DefaultConfig)
@@ -42,7 +42,7 @@ class HeterogeneousTileExampleConfig extends Config(
   new WithTraceGen (n = 2, overrideMemOffset = Some(0x90000000L))() ++
   new WithNBigCores(n = 1) ++
   new WithNMedCores(n = 1) ++
-  new WithNSmallCores(n = 1) ++
+  new WithNSmallCores(n = 2) ++ //jamesTODO: changed withNSmallCores to 2, maybe breaks
   new WithCoherentBusTopology ++
   new BaseConfig
 )
