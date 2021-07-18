@@ -1,4 +1,4 @@
-ackage freechips.rocketchip.rocket
+package freechips.rocketchip.rocket
 
 import Chisel._
 import Chisel.ImplicitConversions._
@@ -14,7 +14,7 @@ import chisel3.{DontCare, WireInit, dontTouch, withClock}
 import chisel3.experimental.{chiselName, NoChiselNamePrefix}
 import chisel3.internal.sourceinfo.SourceInfo
 import TLMessages._
-
+/*
 // TODO: delete this trait once deduplication is smart enough to avoid globally inlining matching circuits
 trait InlineInstance { self: chisel3.experimental.BaseModule =>
   chisel3.experimental.annotate(
@@ -114,6 +114,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     if (!cacheParams.clockGate) clock
     else ClockGate(clock, clock_en_reg, "dcache_clock_gate")
   @chiselName class DCacheModuleImpl extends NoChiselNamePrefix { // entering gated-clock domain
+    
+    tl_out_d.ready := tl_out.e.ready
+    tl_out.b.ready := !tl_out.d.fire()
+    io.cpu.req.ready := !tl_out.d.fire() && !tl_out.b.fire()
 
     val tlb = Module(new TLB(false, log2Ceil(coreDataBytes), TLBConfig(nTLBSets, nTLBWays, cacheParams.nTLBBasePageSectors, cacheParams.nTLBSuperpages)))
     val pma_checker = Module(new TLB(false, log2Ceil(coreDataBytes), TLBConfig(nTLBSets, nTLBWays, cacheParams.nTLBBasePageSectors, cacheParams.nTLBSuperpages)) with InlineInstance)
@@ -146,22 +150,26 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val flush_line = io.cpu.req.bits.cmd === M_FLUSH_ALL && io.cpu.req.bits.size(0)
     val cmd_uses_tlb = isRead(io.cpu.req.bits.cmd) || isWrite(io.cpu.req.bits.cmd) || flush_line || io.cpu.req.bits.cmd === M_WOK
     io.ptw <> tlb.io.ptw
-    tlb.io.kill := io.cpu.s2_kill || tlb_port.s2_kill
-    tlb.io.req.valid := io.cpu.req.fire() && !io.cpu.s1_kill && cmd_uses_tlb
-    tlb.io.req.bits := regNext(tlb_port.req.bits)
+    tlb.io.kill := io.cpu.s2_kill
+    tlb.io.req.valid := io.cpu.req.fire() && cmd_uses_tlb
+    tlb.io.req.bits.passthrough := io.cpu.req.bits.phys
+    tlb.io.req.bits.vaddr := io.cpu.req.bits.addr
+    tlb.io.req.bits.size := io.cpu.req.bits.size
+    tlb.io.req.bits.cmd := io.cpu.req.bits.cmd
     when (!tlb.io.req.ready && !tlb.io.ptw.resp.valid && !io.cpu.req.bits.phys) { io.cpu.req.ready := false }
 
-    tlb.io.sfence.valid := s1_valid && !io.cpu.s1_kill && s1_sfence
-    tlb.io.sfence.bits.rs1 := s1_req.size(0)
-    tlb.io.sfence.bits.rs2 := s1_req.size(1)
-    tlb.io.sfence.bits.asid := io.cpu.s1_data.data
-    tlb.io.sfence.bits.addr := s1_req.addr
-
-    tlb_port.req.ready := clock_en_reg
-    tlb_port.s1_resp := tlb.io.resp
+    tlb.io.sfence.valid := io.cpu.req.fire() && io.cpu.req.bits.cmd === M_SFENCE
+    tlb.io.sfence.bits.rs1 := io.cpu.req.bits.size(0)
+    tlb.io.sfence.bits.rs2 := io.cpu.req.bits.size(1)
+    tlb.io.sfence.bits.asid := io.cpu.s1_data.data // uhhh is the CPU designed assuming pipelined cache??? I hope not
+    tlb.io.sfence.bits.addr := io.cpu.req.bits.addr
 
     pma_checker.io.req.bits.passthrough := true
-    pma_checker.io.req.bits := s1_req
+    pma_checker.io.req.bits := io.cpu.req.bits
+
+    //ADDRESSES
+    val mid_vaddr = Cat(io.cpu.req.bits.idx.getOrElse(io.cpu.req.bits.addr) >> tagLSB, io.cpu.req.bits.addr(tagLSB-1, 0)) // change address to prefer for physical access
+    val vaddr = Cat(mid_vaddr >> tagLSB, paddr(tagLSB-1, 0))
 
 
     //SETTING UP A QUEUE ON A OUTPUTS (probably not needed for our implementation)
@@ -182,6 +190,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     //QUEUE NOT USED FOR C MESSAGES IN THIS IMPLEMENTATION
     val (tl_out_c, release_queue_empty) = (tl_out.c, true.B)
 
+    //D MESSAGE SETUP
+    val (d_first, d_last, d_done, d_address_inc) = edge.addr_inc(tl_out.d)
+
     val tl_out_e = tl_out.e
 
     //INTERFACING WITH METADATA CACHE
@@ -196,10 +207,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val meta_uncorrected = meta.map(tECC.decode(_).uncorrected.asTypeOf(new L1Metadata))
     val meta_tag = paddr >> tagLSB
     val meta_hit_way = meta_uncorrected.map(r => r.coh.isValid() && r.tag == meta_tag).asUInt
-    val meta_hit_state = ClientMetaData.onReset.fromBits(meta_uncorrected.map(r => Mux(r.tag === meta_tag && !flush_valid, r.coh.asUInt, UInt(0))).reduce (_|_)) // best I can tell, this says "either you hit and got the state, or you missed and got N/I"
-
-    val s1_vaddr = Cat(s1_req.idx.getOrElse(s1_req.addr) >> tagLSB, s1_req.addr(tagLSB-1, 0)) // change address to prefer for physical access
-    val s2_vaddr = Cat(s1_vaddr >> tagLSB, paddr(tagLSB-1, 0))
+    val meta_hit_state = CustomClientMetadata.onReset.fromBits(meta_uncorrected.map(r => Mux(r.tag === meta_tag && !flush_valid, r.coh.asUInt, UInt(0))).reduce (_|_)) // best I can tell, this says "either you hit and got the state, or you missed and got N/I"
 
 
     //MESSAGE TYPES
@@ -212,47 +220,69 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       dataInputValid := false
       metaInputValid := false
       val message = Wire(UInt())
-      val state = Wire(ClientMetadata())
-      val nextState = Wire(ClientMetaData())
+      val state = Wire(CustomClientMetadata())
+      val nextState = Wire(CustomClientMetadata())
       message := selectMessageToHandle()
-      switch(message) {
-        is(4.U) { //grant
-          switch (state) {
-            is(ClientMetadata.SMg) {
-              sendEMessage(grantAck)
-              writeDataHelper()
-              //Write
-              nextState = ClientMetadata.M
-            } is(ClientMetadata.SMgr) {
-              //grantAck, write
-              nextState = ClientMetadata.Mr
-            } is(ClientMetadata.SMgrr) {
-              //grantAck, write
-              nextState = ClientMetadata.Mrr
-            } //...
-          }
+      when (message === 4.U) { //grant
+        when (state === ClientMetadata.SMg) {
+          sendEMessage(grantAck)
+          writeFromGrant()
+          writeMetaGrant(CustomClientMetadata.M)
+        } .elsewhen (state === CustomClientMetadata.SMgr) {
+          sendEMessage(grantAck)
+          writeFromGrant()
+          writeMetaGrant(CustomClientMetadata.Mr)
+        } .elsewhen (state === CustomClientMetadata.SMgrr) {
+          sendEMessage(grantAck)
+          writeFromGrant()
+          writeMetaGrant(CustomClientMetadata.Mrr)
+        } .elsewhen (state === ClientMetadata.IMg) {
+          sendEMessage(grantAck)
+          writeFromGrant()
+          writeMetaGrant(CustomClientMetadata.M)
+        } .elsewhen (state === CustomClientMetadata.IMgr) {
+          sendEMessage(grantAck)
+          writeFromGrant()
+          writeMetaGrant(CustomClientMetadata.Mr)
+        } .elsewhen (state === CustomClientMetadata.IMgrr) {
+          sendEMessage(grantAck)
+          writeFromGrant()
+          writeMetaGrant(CustomClientMetadata.Mrr)
+        } .otherwise {
+            assert(true, "A grant was unexpected")
         }
-        is(5.U) { //grantData
+      } .elsewhen (message === 5.U) { //grantData
+        when (state === CustomClientMetadata.ISgd) {
+            sendEMessage(grantAck)
+            //store incoming data
+            //read
+            writeMetaGrant(CustomClientMetadata.S)
+        } .elsewhen (state === CustomClientMetadata.ISgdr) {
 
-        }
-        is(6.U) { //releaseAck
+        } .elsewhen (state === CustomClientMetadata.ISgdrr) {
 
+        } .otherwise {
+            assert(true, "A grantdata was unexpected")
         }
-        is(14.U) { //probeBlock
+      } .elsewhen (message === 6.U) { //releaseAck
 
-        }
-        is(16.U) { //read
+      } .elsewhen (message === 14.U) { //probeBlock
+
+      } .elsewhen (message === 16.U) { //read
           
-        }
-        is(17.U) { //write
+      } .elsewhen (message === 17.U) { //write
 
-        }
       }
       //write nextState to metadata
       //if write then write
     }
 
-    def writeDataHelper(addr: UInt, way: UInt, data: UInt, wordMask: UInt, eccMask: UInt, write: Bool, valid: Bool, priority: UInt) = {
+    def writeFromGrant() = {
+      val d_data = encodeData(tl_out.d.bits.data, tl_out.d.bits.corrupt && !io.ptw.customCSRs.suppressCorruptOnGrantData && !grantIsUncached)
+      writeData((vaddr >> idxLSB) << idxLSB | d_address_inc, meta_hit_way, d_data, ~UInt(0, rowBytes / subWordBytes), ~UInt(0, wordBytes / eccBytes), true)    
+    }
+
+    def writeData(addr: UInt, way: UInt, data: UInt, wordMask: UInt, eccMask: UInt, write: Bool) = {
       dataInputValid := true
       dataInput.write := write
       dataInput.addr := addr
@@ -260,6 +290,21 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       dataInput.wdata := data
       dataInput.wordMask := wordMask
       dataInput.eccMask := eccMask
+    }
+
+    def writeMetaGrant(state: CustomClientMetadata) = {
+      val index = vaddr(idxMSB, idxLSB)
+      val addr = Cat(io.cpu.req.bits.addr >> untagBits, vaddr(idxMSB, 0))
+      val data = tECC.encode(CustomL1Metadata(io.cpu.req.bits.addr >> tagLSB, state).asUInt)
+      writeMeta(addr, meta_hit_way, index, data, true)
+    }
+    def writeMeta(addr: UInt, way: UInt, index: UInt, data: UInt, write: Bool) = {
+      metaInputValid := true
+      metaInput.write := write
+      metaInput.way_en := way
+      metaInput.idx := index
+      metaInput.addr := addr
+      metaInput.data := data
     }
 
     def selectMessageToHandle(): UInt = {
@@ -295,4 +340,4 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       tl_out_e.bits := messageToSend
     }
   }
-}
+}*/

@@ -284,9 +284,23 @@ class L1Metadata(implicit p: Parameters) extends L1HellaCacheBundle()(p) {
   val tag = UInt(width = tagBits)
 }
 
+class CustomL1Metadata(implicit p: Parameters) extends L1HellaCacheBundle()(p) {
+  val coh = new CustomClientMetadata
+  val tag = UInt(width = tagBits)
+}
+
 object L1Metadata {
   def apply(tag: Bits, coh: ClientMetadata)(implicit p: Parameters) = {
     val meta = Wire(new L1Metadata)
+    meta.tag := tag
+    meta.coh := coh
+    meta
+  }
+}
+
+object CustomL1Metadata {
+  def apply(tag: Bits, coh: CustomClientMetadata)(implicit p: Parameters) = {
+    val meta = Wire(new CustomL1Metadata)
     meta.tag := tag
     meta.coh := coh
     meta
