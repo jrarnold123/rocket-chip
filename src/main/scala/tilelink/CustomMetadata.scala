@@ -8,8 +8,8 @@ import freechips.rocketchip.rocket.constants.MemoryOpConstants
 import freechips.rocketchip.util._
 
 object CustomClientStates {
-  val width = 5
-  val M = UInt(0, width)
+  val width = 2
+  /*val M = UInt(0, width)
   val Mr = UInt(1, width)
   val Mrr = UInt(2, width)
   val E = UInt(3, width)
@@ -29,10 +29,14 @@ object CustomClientStates {
   val IMgrr = UInt(17, width)
   val I = UInt(18, width)
   val Ir = UInt(19, width)
-  val IIrr = UInt(20, width)
+  val IIrr = UInt(20, width)*/
+  def I = UInt(0, width)
+  def S  = UInt(1, width)
+  def E   = UInt(2, width)
+  def M   = UInt(3, width)
 
-  def hasReadPermission(state: UInt): Bool = state < ISgd
-  def hasWritePermission(state: UInt): Bool = state < SMg
+  def hasReadPermission(state: UInt): Bool = state > I
+  def hasWritePermission(state: UInt): Bool = state > S
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
@@ -62,7 +66,7 @@ class CustomClientMetadata extends Bundle {
   def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
 
   /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state < CustomClientStates.ISrr
+  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I
 
   /** Determine whether this cmd misses, and the new state (on hit) or param to be sent (on miss) */
   private def growStarter(cmd: UInt): (Bool, UInt) = {
@@ -70,23 +74,21 @@ class CustomClientMetadata extends Bundle {
     import TLPermissions._
     import CustomClientStates._
     val c = categorize(cmd)
-    val wasHit = Wire(Bool())
-    wasHit := (c === rd && state < ISgd) || (c === wr && state < SMg)
-    val nextState = Wire(UInt())
-    when (c === wr) {
-        when (state === E) {
-            nextState := M
-        } .elsewhen (state === Er) {
-            nextState := Mr
-        } .elsewhen (state === Err) {
-            nextState := Mrr
-        } .otherwise {
-            nextState := state
-        }
-    } .otherwise {
-        nextState := state
-    }
-    (wasHit, nextState.asUInt)
+    MuxTLookup(Cat(c, state), (Bool(false), UInt(0)), Seq(
+        //(effect, am now) -> (was a hit,   next)
+        Cat(rd, M)   -> (Bool(true),  M),
+        Cat(rd, E)   -> (Bool(true),  E),
+        Cat(rd, S)  -> (Bool(true),  S),
+        Cat(wi, M)   -> (Bool(true),  M),
+        Cat(wi, S)   -> (Bool(true),  S),
+        Cat(wr, M)   -> (Bool(true),  M),
+        Cat(wr, S)   -> (Bool(true),  M),
+        //(effect, am now) -> (was a miss,  param)
+        Cat(rd, I) -> (Bool(false), NtoB),
+        Cat(wi, S)  -> (Bool(false), BtoT),
+        Cat(wi, I) -> (Bool(false), NtoT),
+        Cat(wr, S)  -> (Bool(false), BtoT),
+        Cat(wr, I) -> (Bool(false), NtoT)))
   }
 
   /** Determine what state to go to after miss based on Grant param
@@ -99,32 +101,12 @@ class CustomClientMetadata extends Bundle {
     val c = categorize(cmd)
     //assert(c === rd || param === toT, "Client was expecting trunk permissions.")
 
-    val nextState = Wire(UInt())
-    when (param === toT) {
-        when (state === SMg || state === IMg) {
-            nextState := M
-        } .elsewhen (state === SMgr || state === IMgr) {
-            nextState := Mr
-        } .elsewhen (state === SMgrr || state === IMgrr) {
-            nextState := Mrr
-        } .otherwise {
-            assert(true, "grant toT was unexpected")
-        }
-    } .elsewhen (param === toB) {
-        when (state === ISgd) {
-            nextState := S
-        } .elsewhen (state === ISgdr) {
-            nextState := Sr
-        } .elsewhen (state === ISgdrr) {
-            nextState := ISrr
-        } .otherwise {
-            assert(true, "grant toB was unexpected")
-        }
-    } .otherwise {
-        assert(true, "grant was not toT or toB")
-    }
-
-    nextState.asUInt
+    MuxLookup(Cat(c, param), I, Seq(
+    //(effect param) -> (next)
+      Cat(rd, toB)   -> S,
+      Cat(rd, toT)   -> E,
+      Cat(wi, toT)   -> E,
+      Cat(wr, toT)   -> M)).asUInt
   }
 
   /** Does this cache have permissions on this block sufficient to perform op,
@@ -153,54 +135,22 @@ class CustomClientMetadata extends Bundle {
 
   /** Determine what state to go to based on Probe param */
   private def shrinkHelper(param: UInt): (Bool, UInt, UInt) = {
-      //JAMESTODO: CURRENTLY IGNORES STALL CASES
     import CustomClientStates._
     import TLPermissions._
-    val hasDirtyData = Wire(Bool())
-    hasDirtyData := state < E
-    val resp = Wire(UInt())
-    val nextState = Wire(UInt())
-    when (param === toB) {
-        when (state === M || state === E) {
-            nextState := S
-            resp := TtoB
-        } .elsewhen (state === Mr || state === Er) {
-            nextState := Sr
-            resp := TtoB
-        } .elsewhen (state === SMg || state === SMgr || state === S || state === Sr) {
-            resp := BtoB
-            nextState := state
-        } .otherwise {
-            nextState := state
-            resp := NtoN
-        }
-    } .elsewhen (param === toN) {
-        when (state === M || state === E) {
-            nextState := I
-            resp := TtoN
-        } .elsewhen(state === S) {
-            nextState := I
-            resp := BtoN
-        } .elsewhen (state === Mr || state === Er) {
-            nextState := Ir
-            resp := TtoN
-        } .elsewhen (state === Sr) {
-            nextState := Ir
-            resp := BtoN
-        } .elsewhen (state === SMg) {
-            nextState := IMg
-            resp := BtoN
-        } .elsewhen (state === SMgr) {
-            nextState := IMgr
-            resp := BtoN
-        } .otherwise {
-            nextState := state
-            resp := NtoN
-        }
-    } .otherwise {
-        assert (true, "toB or toN expected from probe")
-    }
-    (hasDirtyData, resp, nextState)
+    MuxTLookup(Cat(param, state), (Bool(false), UInt(0), UInt(0)), Seq(
+    //(wanted, am now)  -> (hasDirtyData resp, next)
+      Cat(toT, M)   -> (Bool(true),  TtoT, E),
+      Cat(toT, E)   -> (Bool(false), TtoT, E),
+      Cat(toT, S)  -> (Bool(false), BtoB, S),
+      Cat(toT, I) -> (Bool(false), NtoN, I),
+      Cat(toB, M)   -> (Bool(true),  TtoB, S),
+      Cat(toB, E)   -> (Bool(false), TtoB, S),  // Policy: Don't notify on clean downgrade
+      Cat(toB, S)  -> (Bool(false), BtoB, S),
+      Cat(toB, I) -> (Bool(false), NtoN, I),
+      Cat(toN, M)   -> (Bool(true),  TtoN, I),
+      Cat(toN, E)   -> (Bool(false), TtoN, I), // Policy: Don't notify on clean downgrade
+      Cat(toN, S)  -> (Bool(false), BtoN, I), // Policy: Don't notify on clean downgrade
+      Cat(toN, I) -> (Bool(false), NtoN, I)))
   }
 
   /** Translate cache control cmds into Probe param */

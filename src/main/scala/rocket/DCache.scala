@@ -118,7 +118,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     else ClockGate(clock, clock_en_reg, "dcache_clock_gate")
   @chiselName class DCacheModuleImpl extends NoChiselNamePrefix { // entering gated-clock domain
 
-    tl_out.a.valid := false
+    //tl_out.a.valid := false
 
     val tlb = Module(new TLB(false, log2Ceil(coreDataBytes), TLBConfig(nTLBSets, nTLBWays, cacheParams.nTLBBasePageSectors, cacheParams.nTLBSuperpages)))
     val pma_checker = Module(new TLB(false, log2Ceil(coreDataBytes), TLBConfig(nTLBSets, nTLBWays, cacheParams.nTLBBasePageSectors, cacheParams.nTLBSuperpages)) with InlineInstance)
@@ -1174,7 +1174,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         //TODO: CHANGE THIS
         sendEMessage(grantAck, d_first)
         writeMetaGrant()
-        when (state === CustomClientStates.SMg) {
+        /*when (state === CustomClientStates.SMg) {
           //sendEMessage(grantAck, true)
           //writeMetaGrant(CustomClientStates.M)
         } .elsewhen (state === CustomClientStates.SMgr) {
@@ -1194,12 +1194,12 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           //writeMetaGrant(CustomClientStates.Mrr)
         } .otherwise {
             //assert(true, "A grant was unexpected")
-        }
+        }*/
       } .elsewhen (message === 5.U) { //grantData
         sendEMessage(grantAck, d_first)
         writeMetaGrant()
         writeDataGrant()
-        when (state === CustomClientStates.ISgd) {
+        /*when (state === CustomClientStates.ISgd) {
             //sendEMessage(grantAck)
             //store incoming data
             //read
@@ -1210,7 +1210,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
         } .otherwise {
             //assert(true, "A grantdata was unexpected")
-        }
+        }*/
       } .elsewhen (message === 6.U) { //releaseAck
 
       } .elsewhen (message === 14.U) { //probeBlock
