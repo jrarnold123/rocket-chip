@@ -16,7 +16,7 @@ import scala.collection.mutable.ArrayBuffer
 
 case class RocketCoreParams(
   bootFreqHz: BigInt = 0,
-  useVM: Boolean = true,
+  useVM: Boolean = false, //jamesTODO: changed this to false
   useUser: Boolean = false,
   useSupervisor: Boolean = false,
   useDebug: Boolean = true,
