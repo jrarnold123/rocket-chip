@@ -155,7 +155,7 @@ class TLEdge(
     }
   }
 
-  def mask(x: TLAddrChannel): UInt = {
+  def mask(x: TLAddrChannel): UInt = { //JamesTODO: warnings due to not having TlBundleD
     x match {
       case a: TLBundleA => a.mask
       case b: TLBundleB => b.mask
@@ -163,7 +163,7 @@ class TLEdge(
     }
   }
 
-  def full_mask(x: TLAddrChannel): UInt = {
+  def full_mask(x: TLAddrChannel): UInt = {//JamesTODO: warnings due to not having TlBundleD
     x match {
       case a: TLBundleA => mask(a.address, a.size)
       case b: TLBundleB => mask(b.address, b.size)
@@ -176,6 +176,7 @@ class TLEdge(
       case a: TLBundleA => a.address
       case b: TLBundleB => b.address
       case c: TLBundleC => c.address
+      case d: TLBundleD => d.address
     }
   }
 
@@ -650,7 +651,7 @@ class TLEdgeIn(
     d.corrupt := Bool(false)
     d
   }
-
+  
   // Accesses
   def Get(fromAddress: UInt, toSource: UInt, lgSize: UInt) = {
     require (client.anySupportGet, s"TileLink: No clients visible from this edge support Gets, but one of these managers would try to issue one: ${manager.managers}")

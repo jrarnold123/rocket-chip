@@ -210,7 +210,9 @@ class TLRAM(
     in.d.bits.param   := 0.U
     in.d.bits.size    := Mux(d_mux, d_size,   r_size)
     in.d.bits.source  := Mux(d_mux, d_source, r_source)
+    in.d.bits.address := Mux(d_mux, d_address, r_address)
     in.d.bits.sink    := 0.U
+    in.d.bits.data    := Mux(d_mux, d_address, r_address)
     in.d.bits.denied  := false.B
     in.d.bits.data    := Mux(d_mux, d_corrected, r_uncorrected)
     in.d.bits.corrupt := Mux(d_mux, d_error, r_error) && out_aad

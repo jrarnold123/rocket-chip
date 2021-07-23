@@ -108,6 +108,14 @@ class CustomClientMetadata extends Bundle {
       Cat(wi, toT)   -> E,
       Cat(wr, toT)   -> M)).asUInt
   }
+  private def growFinisher(param: UInt): UInt = {
+    import TLPermissions._
+    import CustomClientStates._
+    MuxLookup(param, I, Seq(
+    //(effect param) -> (next)
+      toB   -> S,
+      toT   -> M)).asUInt
+  }
 
   /** Does this cache have permissions on this block sufficient to perform op,
     * and what to do next (Acquire message param or updated metadata). */
@@ -132,13 +140,14 @@ class CustomClientMetadata extends Bundle {
 
   /** Metadata change on a returned Grant */
   def onGrant(cmd: UInt, param: UInt): CustomClientMetadata = CustomClientMetadata(growFinisher(cmd, param))
+  def onGrant(param: UInt): CustomClientMetadata = CustomClientMetadata(growFinisher(param))
 
   /** Determine what state to go to based on Probe param */
   private def shrinkHelper(param: UInt): (Bool, UInt, UInt) = {
     import CustomClientStates._
     import TLPermissions._
     MuxTLookup(Cat(param, state), (Bool(false), UInt(0), UInt(0)), Seq(
-    //(wanted, am now)  -> (hasDirtyData resp, next)
+    //(wanted, am now)  -> (hasDirtyData, resp, next)
       Cat(toT, M)   -> (Bool(true),  TtoT, E),
       Cat(toT, E)   -> (Bool(false), TtoT, E),
       Cat(toT, S)  -> (Bool(false), BtoB, S),

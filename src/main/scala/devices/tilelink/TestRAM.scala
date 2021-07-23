@@ -48,6 +48,7 @@ class TLTestRAM(address: AddressSet, executable: Boolean = true, beatBytes: Int 
 
     in.d.bits := edge.AccessAck(in.a.bits)
     in.d.bits.data := Cat(mem(memAddress).reverse)
+    in.d.bits.address := in.a.bits.address
     in.d.bits.corrupt := !hasData && bad(memAddress) && Bool(trackCorruption)
     in.d.bits.opcode := Mux(hasData, TLMessages.AccessAck, TLMessages.AccessAckData)
     when (in.a.fire() && hasData) {

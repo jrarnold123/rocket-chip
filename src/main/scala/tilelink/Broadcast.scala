@@ -120,7 +120,7 @@ class TLBroadcast(params: TLBroadcastParams)(implicit p: Parameters) extends Laz
       val d_hasData = edgeOut.hasData(out.d.bits)
       val d_normal = Wire(in.d)
       val (d_first, d_last, _) = edgeIn.firstlast(d_normal)
-      val d_trackerOH = VecInit(trackers.map { t => t.need_d && t.source === d_normal.bits.source }).asUInt holdUnless d_first
+      val d_trackerOH = VecInit(trackers.map { t => t.need_d && t.source === d_normal.bits.source }).asUInt holdUnless d_first // store value on d_first and hold value until next d_first... essentially a RegEnable with instantaneous updates
 
       assert (!out.d.valid || !d_drop || out.d.bits.opcode === TLMessages.AccessAck)
 
@@ -167,7 +167,7 @@ class TLBroadcast(params: TLBroadcastParams)(implicit p: Parameters) extends Laz
       val CisN = in.c.bits.param === TLPermissions.TtoN ||
                  in.c.bits.param === TLPermissions.BtoN ||
                  in.c.bits.param === TLPermissions.NtoN
-      val clearOH = Mux(in.c.fire() && (c_probeack || c_probeackdata) && CisN, whoC, 0.U)
+      val clearOH = Mux(in.c.fire() && (c_probeack || c_probeackdata) && CisN, whoC, 0.U) // whoC points at sender of ProbeAcks
 
       // Decrement the tracker's outstanding probe counter
       (trackers zip c_trackerOH) foreach { case (tracker, select) =>
@@ -191,6 +191,7 @@ class TLBroadcast(params: TLBroadcastParams)(implicit p: Parameters) extends Laz
 
       releaseack.valid := in.c.valid && (filter.io.release.ready || !c_first) && c_release
       releaseack.bits  := edgeIn.ReleaseAck(in.c.bits)
+      releaseack.bits.address := in.c.bits.address
 
       val put_what = Mux(c_releasedata, TRANSFORM_B, DROP)
       val put_who  = Mux(c_releasedata, in.c.bits.source, c_trackerSrc)

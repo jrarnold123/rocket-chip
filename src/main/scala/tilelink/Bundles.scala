@@ -218,7 +218,7 @@ final class TLBundleC(params: TLBundleParameters)
 }
 
 final class TLBundleD(params: TLBundleParameters)
-  extends TLBundleBase(params) with TLDataChannel
+  extends TLBundleBase(params) with TLAddrChannel
 {
   val channelName = "'D' channel"
   // fixed fields during multibeat:
@@ -227,6 +227,7 @@ final class TLBundleD(params: TLBundleParameters)
   val size    = UInt(width = params.sizeBits)
   val source  = UInt(width = params.sourceBits) // to
   val sink    = UInt(width = params.sinkBits)   // from
+  val address = UInt(width = params.addressBits) // JamesTODO: ADDED THIS
   val denied  = Bool() // implies corrupt iff *Data
   val user    = BundleMap(params.responseFields)
   val echo    = BundleMap(params.echoFields)

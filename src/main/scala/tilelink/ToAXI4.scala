@@ -193,7 +193,7 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
       }
 
       val stall = sourceStall(in.a.bits.source) && a_first
-      in.a.ready := !stall && Mux(a_isPut, (doneAW || out_arw.ready) && out_w.ready, out_arw.ready)
+      in.a.ready := !stall && Mux(a_isPut, (doneAW || out_arw.ready) && out_w.ready, out_arw.ready) && !in.d.valid
       out_arw.valid := !stall && in.a.valid && Mux(a_isPut, !doneAW && out_w.ready, Bool(true))
 
       out_w.valid := !stall && in.a.valid && a_isPut && (doneAW || out_arw.ready)
@@ -236,7 +236,8 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
 
       in.d.bits := Mux(r_wins, r_d, b_d)
       in.d.bits.data := out.r.bits.data // avoid a costly Mux
-
+      val addrReg = RegEnable(in.a.bits.address, in.a.valid)
+      in.d.bits.address := addrReg
       // We need to track if any reads or writes are inflight for a given ID.
       // If the opposite type arrives, we must stall until it completes.
       val a_sel = UIntToOH(arw.id, edgeOut.master.endId).asBools

@@ -1,4 +1,4 @@
-package freechips.rocketchip.rocket
+/*package freechips.rocketchip.rocket
 
 import Chisel._
 import Chisel.ImplicitConversions._
@@ -14,7 +14,7 @@ import chisel3.{DontCare, WireInit, dontTouch, withClock}
 import chisel3.experimental.{chiselName, NoChiselNamePrefix}
 import chisel3.internal.sourceinfo.SourceInfo
 import TLMessages._
-/*
+
 // TODO: delete this trait once deduplication is smart enough to avoid globally inlining matching circuits
 trait InlineInstance { self: chisel3.experimental.BaseModule =>
   chisel3.experimental.annotate(
@@ -124,7 +124,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     // tags
     val replacer = ReplacementPolicy.fromString(cacheParams.replacementPolicy, nWays)
-    val metaInput = Module(new DCacheMetadataReq)
+    val addrToUse = Wire(Bits(width = vaddrBitsExtended))
     val metaInputReady = Wire(Bool())
     val metaInputValid = Wire(Bool())
     metaInputReady := clock_en_reg // possibly always true?
@@ -145,31 +145,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     data.io.req.valid := dataInputValid
     data.io.req.bits := dataInput
 
-    // address translation
-    // ! using TLB
-    val flush_line = io.cpu.req.bits.cmd === M_FLUSH_ALL && io.cpu.req.bits.size(0)
-    val cmd_uses_tlb = isRead(io.cpu.req.bits.cmd) || isWrite(io.cpu.req.bits.cmd) || flush_line || io.cpu.req.bits.cmd === M_WOK
-    io.ptw <> tlb.io.ptw
-    tlb.io.kill := io.cpu.s2_kill
-    tlb.io.req.valid := io.cpu.req.fire() && cmd_uses_tlb
-    tlb.io.req.bits.passthrough := io.cpu.req.bits.phys
-    tlb.io.req.bits.vaddr := io.cpu.req.bits.addr
-    tlb.io.req.bits.size := io.cpu.req.bits.size
-    tlb.io.req.bits.cmd := io.cpu.req.bits.cmd
-    when (!tlb.io.req.ready && !tlb.io.ptw.resp.valid && !io.cpu.req.bits.phys) { io.cpu.req.ready := false }
-
-    tlb.io.sfence.valid := io.cpu.req.fire() && io.cpu.req.bits.cmd === M_SFENCE
-    tlb.io.sfence.bits.rs1 := io.cpu.req.bits.size(0)
-    tlb.io.sfence.bits.rs2 := io.cpu.req.bits.size(1)
-    tlb.io.sfence.bits.asid := io.cpu.s1_data.data // uhhh is the CPU designed assuming pipelined cache??? I hope not
-    tlb.io.sfence.bits.addr := io.cpu.req.bits.addr
-
-    pma_checker.io.req.bits.passthrough := true
-    pma_checker.io.req.bits := io.cpu.req.bits
-
     //ADDRESSES
-    val mid_vaddr = Cat(io.cpu.req.bits.idx.getOrElse(io.cpu.req.bits.addr) >> tagLSB, io.cpu.req.bits.addr(tagLSB-1, 0)) // change address to prefer for physical access
-    val vaddr = Cat(mid_vaddr >> tagLSB, paddr(tagLSB-1, 0))
+    val vaddr = Cat(addrToUse >> blockOffBits, io.cpu.req.bits.addr(blockOffBits-1, 0))
+    val paddr = vaddr(paddrBits-1, 0)
 
 
     //SETTING UP A QUEUE ON A OUTPUTS (probably not needed for our implementation)
@@ -196,14 +174,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val tl_out_e = tl_out.e
 
     //INTERFACING WITH METADATA CACHE
-    val req_addr = Cat(metaInput.addr >> blockOffBits, io.cpu.req.bits.addr(blockOffBits-1,0))
-    val paddr = Cat(Mux(tlb.io.req.fire(), req_addr(paddrBits-1, pgIdxBits), tlb.io.resp.paddr >> pgIdxBits), req_addr(pgIdxBits-1, 0))
-    val metaIdx = metaInput.idx
-    when (metaInputValid && metaInput.write) {
-      val wmask = if (nWays == 1) Seq(true.B) else metaInput.way_en.asBools
-      tag_array.write(metaIdx, Vec.fill(nWays)(metaInput.data), wmask)
-    }
-    val meta = tag_array.read(metaIdx, meatInputValid, && !metaInput.write)
+    val meta = tag_array.read(metaIdx, metaInputValid, && !metaInput.write)
     val meta_uncorrected = meta.map(tECC.decode(_).uncorrected.asTypeOf(new L1Metadata))
     val meta_tag = paddr >> tagLSB
     val meta_hit_way = meta_uncorrected.map(r => r.coh.isValid() && r.tag == meta_tag).asUInt
@@ -214,76 +185,117 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val grantAck = edge.GrantAck(tl_out.d.bits)
 
     def newFSM() = {
-      tl_out_a.valid := false
-      tl_out_c.valid := false
+      //tl_out_a.valid := false
+      //tl_out_c.valid := false
       tl_out_e.valid := false
-      dataInputValid := false
-      metaInputValid := false
+      metaValid := false
       val message = Wire(UInt())
-      val state = Wire(CustomClientMetadata())
-      val nextState = Wire(CustomClientMetadata())
+      val state = Wire(CustomClientMetadata(CustomClientStates.I))
       message := selectMessageToHandle()
       when (message === 4.U) { //grant
-        when (state === ClientMetadata.SMg) {
-          sendEMessage(grantAck)
-          writeFromGrant()
-          writeMetaGrant(CustomClientMetadata.M)
-        } .elsewhen (state === CustomClientMetadata.SMgr) {
-          sendEMessage(grantAck)
-          writeFromGrant()
-          writeMetaGrant(CustomClientMetadata.Mr)
-        } .elsewhen (state === CustomClientMetadata.SMgrr) {
-          sendEMessage(grantAck)
-          writeFromGrant()
-          writeMetaGrant(CustomClientMetadata.Mrr)
-        } .elsewhen (state === ClientMetadata.IMg) {
-          sendEMessage(grantAck)
-          writeFromGrant()
-          writeMetaGrant(CustomClientMetadata.M)
-        } .elsewhen (state === CustomClientMetadata.IMgr) {
-          sendEMessage(grantAck)
-          writeFromGrant()
-          writeMetaGrant(CustomClientMetadata.Mr)
-        } .elsewhen (state === CustomClientMetadata.IMgrr) {
-          sendEMessage(grantAck)
-          writeFromGrant()
-          writeMetaGrant(CustomClientMetadata.Mrr)
-        } .otherwise {
-            assert(true, "A grant was unexpected")
-        }
+        /*state := readMeta(/**/)
+        when (state === ...) {
+          sendMessage
+          metaWrite(...)
+        }*/
+        sendEMessage(grantAck, d_first)
+        writeMetaGrant(meta_hit_state.onGrant(tl_out.d.bits.param))
       } .elsewhen (message === 5.U) { //grantData
-        when (state === CustomClientMetadata.ISgd) {
-            sendEMessage(grantAck)
-            //store incoming data
-            //read
-            writeMetaGrant(CustomClientMetadata.S)
-        } .elsewhen (state === CustomClientMetadata.ISgdr) {
-
-        } .elsewhen (state === CustomClientMetadata.ISgdrr) {
-
-        } .otherwise {
-            assert(true, "A grantdata was unexpected")
-        }
+        sendEMessage(grantAck, d_first)
+        writeMetaGrant(meta_hit_state.onGrant(tl_out.d.bits.param))
+        writeDataGrant()
       } .elsewhen (message === 6.U) { //releaseAck
 
       } .elsewhen (message === 14.U) { //probeBlock
 
       } .elsewhen (message === 16.U) { //read
-          
+        when (!s2_victim_dirty && s2_valid_cached_miss) {
+          sendAMessage(acquire(paddr, meta_hit_state.onAccess(io.cpu.req.bits.cmd)._2), true)
+        } .otherwise {
+          tl_out_a.valid := false.B
+        }
       } .elsewhen (message === 17.U) { //write
-
+        when (!s2_victim_dirty && s2_valid_cached_miss) {
+          sendAMessage(acquire(paddr, meta_hit_state.onAccess(io.cpu.req.bits.cmd)._2), true)
+        } .otherwise {
+          tl_out_a.valid := false.B
+        }
       }
-      //write nextState to metadata
-      //if write then write
     }
 
-    def writeFromGrant() = {
-      val d_data = encodeData(tl_out.d.bits.data, tl_out.d.bits.corrupt && !io.ptw.customCSRs.suppressCorruptOnGrantData && !grantIsUncached)
-      writeData((vaddr >> idxLSB) << idxLSB | d_address_inc, meta_hit_way, d_data, ~UInt(0, rowBytes / subWordBytes), ~UInt(0, wordBytes / eccBytes), true)    
+    def selectMessageToHandle(): UInt = {
+      val out = Wire(UInt())
+      out := 0
+      when (tl_out.d.valid) {
+        metaIdx := 
+        out := tl_out.d.bits.opcode
+      } .elsewhen (tl_out.b.valid) {
+        out := 8.U + tl_out.b.bits.opcode
+      } .elsewhen (io.cpu.req.valid && !io.cpu.s2_kill) {
+        when (isRead(io.cpu.req.bits.cmd)) {
+          out := 16.U
+        } .otherwise {
+          out := 17.U
+        }
+      }
+      out
     }
 
-    def writeData(addr: UInt, way: UInt, data: UInt, wordMask: UInt, eccMask: UInt, write: Bool) = {
-      dataInputValid := true
+    def writeDataCPUWrite() = {
+      val valid = should_pstore_drain(false)
+      val write = pstore_drain
+      val addr = Mux(pstore2_valid, pstore2_addr, pstore1_addr)
+      val way = Mux(pstore2_valid, pstore2_way, pstore1_way)
+      val data = encodeData(Fill(rowWords, Mux(pstore2_valid, pstore2_storegen_data, pstore1_data)), false.B)
+      val eccMask = eccMaskFunc(Mux(pstore2_valid, pstore2_storegen_mask, pstore1_mask))
+      val wordMask = {
+        val eccMaskInner = eccMask.asBools.grouped(subWordBytes/eccBytes).map(_.orR).toSeq.asUInt
+        val wordMask = UIntToOH(Mux(pstore2_valid, pstore2_addr, pstore1_addr).extract(rowOffBits-1, wordBytes.log2))
+        FillInterleaved(wordBytes/subWordBytes, wordMask) & Fill(rowBytes/wordBytes, eccMaskInner)
+      }
+      writeDataHelper(addr, way, data, wordMask, eccMask, write, valid, 0.U)
+    }
+    def writeDataGrant() = {
+      val valid = tl_out.d.valid && grantIsRefill && canAcceptCachedGrant
+      val write = true
+      val addr =  (vaddr >> idxLSB) << idxLSB | d_address_inc
+      val way = refill_way
+      val data = tl_d_data_encoded
+      val wordMask = ~UInt(0, rowBytes / subWordBytes)
+      val eccMask = ~UInt(0, wordBytes / eccBytes)
+      writeDataHelper(addr, way, data, wordMask, eccMask, write, valid, 1.U)
+    }
+    def writeDataProbe() = {
+      val valid = inWriteback && releaseDataBeat < refillCycles
+      val data = dataArb.io.in(1).bits.wdata
+      val write = false
+      val addr = (probeIdx(probe_bits) << blockOffBits) | (releaseDataBeat(log2Up(refillCycles)-1,0) << rowOffBits)
+      val wordMask = ~UInt(0, rowBytes / subWordBytes)
+      val eccMask = ~UInt(0, wordBytes / eccBytes)
+      val way = ~UInt(0, nWays)
+      writeDataHelper(addr, way, data, wordMask, eccMask, write, valid, 2.U)
+    }
+    def writeDataCPURead() = {
+      val valid = io.cpu.req.valid && likelyNeedsRead(io.cpu.req.bits)
+      val data = dataArb.io.in(1).bits.wdata
+      val write = false
+      val addr = io.cpu.req.bits.addr
+      val wordMask = {
+        val mask = (subWordBytes.log2 until rowOffBits).foldLeft(1.U) { case (in, i) =>
+          val upper_mask = Mux(i >= wordBytes.log2 || io.cpu.req.bits.size <= i.U, 0.U,
+            ((BigInt(1) << (1 << (i - subWordBytes.log2)))-1).U)
+          val upper = Mux(io.cpu.req.bits.addr(i), in, 0.U) | upper_mask
+          val lower = Mux(io.cpu.req.bits.addr(i), 0.U, in)
+          upper ## lower
+        }
+        Fill(subWordBytes / eccBytes, mask)
+      }
+      val eccMask = ~UInt(0, wordBytes / eccBytes)
+      val way = ~UInt(0, nWays)
+      writeDataHelper(addr, way, data, wordMask, eccMask, write, valid, 3.U)
+    }    
+    def writeDataHelper(addr: UInt, way: UInt, data: UInt, wordMask: UInt, eccMask: UInt, write: Bool, valid: Bool, priority: UInt) = {
+      dataInputValid := valid
       dataInput.write := write
       dataInput.addr := addr
       dataInput.way_en := way
@@ -292,52 +304,100 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       dataInput.eccMask := eccMask
     }
 
-    def writeMetaGrant(state: CustomClientMetadata) = {
+    def writeMetaReset() = {
+      val valid = resetting
+      val write = true
+      val index = flushCounter(idxBits-1, 0)
+      val addr = Cat(io.cpu.req.bits.addr >> untagBits, flushCounter(idxBits-1, 0) << blockOffBits)
+      val way = ~UInt(0, nWays)
+      val data = tECC.encode(CustomL1Metadata(0.U, CustomClientMetadata.onReset).asUInt)
+      val wmask = if (nWays == 1) Seq(true.B) else way.asBools
+      when (valid) {
+        addrToUse := addr
+        tag_array.write(index, Vec.fill(nWays)(data), wmask)
+      }
+    }
+    
+    def writeMetaHit() = {
+      val valid = s2_valid_hit_pre_data_ecc_and_waw && s2_update_meta
+      val write = true
+      val way = Wire(Bits(width = nWays))
+      way := s2_victim_or_hit_way
       val index = vaddr(idxMSB, idxLSB)
       val addr = Cat(io.cpu.req.bits.addr >> untagBits, vaddr(idxMSB, 0))
-      val data = tECC.encode(CustomL1Metadata(io.cpu.req.bits.addr >> tagLSB, state).asUInt)
-      writeMeta(addr, meta_hit_way, index, data, true)
-    }
-    def writeMeta(addr: UInt, way: UInt, index: UInt, data: UInt, write: Bool) = {
-      metaInputValid := true
-      metaInput.write := write
-      metaInput.way_en := way
-      metaInput.idx := index
-      metaInput.addr := addr
-      metaInput.data := data
-    }
-
-    def selectMessageToHandle(): UInt = {
-      val out = Wire(UInt())
-      when (tl_out.d.valid) {
-        out := tl_out.d.bits.opcode
-      } .elsewhen (tl_out.b.valid) {
-        out := 8.U + tl_out.b.bits.opcode
-      } .elsewhen (io.cpu.req.valid) {
-        when (isRead(io.cpu.req.bits.cmd)) {
-          out := 16.U
-        } .otherwise {
-          out := 17.U
-        }
-      } .otherwise {
-          out := 0.U
+      //s0_req.addr := Cat(addr >> blockOffBits, io.cpu.req.bits.addr(blockOffBits-1,0))
+      val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, s2_new_hit_state).asUInt)
+      val wmask = if (nWays == 1) Seq(true.B) else way.asBools
+      when (valid && write) {
+        addrToUse := addr
+        tag_array.write(index, Vec.fill(nWays)(data), wmask)
+      } .elsewhen (valid) {
+        addrToUse := addr
+        meta := tag_array.read(index, true)
       }
-      out
+    }
+    def writeMetaGrant(newState: CustomClientMetadata) = {
+      val valid = true
+      val write = true
+      val way = Wire(Bits(width = nWays))
+      way := refill_way
+      val index = tl_out.d.bits.address(idxMSB, idxLSB)
+      val addr = tl_out.d.bits.address
+      val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, newState).asUInt)//s2_hit_state.onGrant(s2_req.cmd, tl_out.d.bits.param)).asUInt)
+      val wmask = if (nWays == 1) Seq(true.B) else way.asBools
+      when (valid) {
+        addrToUse := addr
+        tag_array.write(index, Vec.fill(nWays)(data), wmask)
+      }
+    }
+    def writeMetaRelease() = {
+      val valid = release_state.isOneOf(s_voluntary_write_meta, s_probe_write_meta)
+      val write = true
+      probeWay := releaseWay
+      val index = probeIdx(probe_bits)
+      val addr = Cat(io.cpu.req.bits.addr >> untagBits, probe_bits.address(idxMSB, 0))
+      probeData := tECC.encode(CustomL1Metadata(tl_out_c.bits.address >> tagLSB, newCoh).asUInt)
+      val wmask = if (nWays ==1) Seq(true.B) else probeWay.asBools
+      when (valid) {
+        addrToUse := addr
+        tag_array.write(index, Vec.fill(nWays)(probeData), wmask)
+      }
+    }
+    def writeMetaProbe() = {
+      val valid = release_state === s_probe_retry || (tl_out.b.valid && (!block_probe_for_core_progress || lrscBackingOff))
+      val write = false
+      val index = Mux(release_state === s_probe_retry, probeIdx(tl_out.b.bits), probeIdx(tl_out.b.bits))
+      val addr = Cat(io.cpu.req.bits.addr >> paddrBits, Mux(release_state === s_probe_retry, probe_bits.address, tl_out.b.bits.address))
+      val way = probeWay
+      val data = probeData
+      when (valid) {
+        addrToUse := addr
+        meta := tag_array.read(index, true)
+      }
+    }
+    def writeMetaCPU() = {
+      val valid = io.cpu.req.valid
+      val write = false
+      val index = io.cpu.req.bits.addr(idxMSB, idxLSB)
+      val addr = io.cpu.req.bits.addr
+      val way = probeWay
+      val data = probeData
+      when (valid) {
+        addrToUse := addr
+        meta := tag_array.read(index, true)
+      }
     }
 
-    def sendAMessage(messageToSend: TLBundleA) = {
-      tl_out_a.valid := true
-      tl_out_a.bits := messageToSend
+    def readMeta(idx: UInt) = {
+      tag_array.read(idx, true)
     }
 
-    def sendCMessage(messageToSend: TLBundleC) = {
-      tl_out_c.valid := true
-      tl_out_c.bits := messageToSend
-    }
 
-    def sendEMessage(messageToSend: TLBundleE) = {
-      tl_out_e.valid := true
-      tl_out_e.bits := messageToSend
-    }
+
+    def acquire(paddr: UInt, param: UInt): TLBundleA = {
+    // ? Seems to check if AcquireB is supported by any slaves, then adjusts the message accordingly?
+    if (!edge.manager.anySupportAcquireB) Wire(new TLBundleA(edge.bundle))
+    else edge.AcquireBlock(UInt(0), paddr >> lgCacheBlockBytes << lgCacheBlockBytes, lgCacheBlockBytes, param)._2
+  }
   }
 }*/
