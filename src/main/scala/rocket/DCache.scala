@@ -1109,6 +1109,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     }
 
+    //submodule test
+
     // ! A CHANNEL STUFF HERE
     
     def isAValid() = {
