@@ -106,6 +106,7 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
       val map = new TLtoAXI4IdMap(edgeIn.client)
       val sourceStall = Wire(Vec(edgeIn.client.endSourceId, Bool()))
       val sourceTable = Wire(Vec(edgeIn.client.endSourceId, out.aw.bits.id))
+      val backTable = Wire(Vec(edgeOut.master.endId, in.a.bits.source))
       val idStall = Wire(init = Vec.fill(edgeOut.master.endId) { Bool(false) })
       var idCount = Array.fill(edgeOut.master.endId) { None:Option[Int] }
 
@@ -114,6 +115,7 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
           val id = axi4Id.start + (if (fifo) 0 else i)
           sourceStall(tlId.start + i) := idStall(id)
           sourceTable(tlId.start + i) := UInt(id)
+          backTable(UInt(id)) := sourceTable(tlId.start + i)
         }
         if (fifo) { idCount(axi4Id.start) = Some(tlId.size) }
       }
@@ -193,7 +195,7 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
       }
 
       val stall = sourceStall(in.a.bits.source) && a_first
-      in.a.ready := !stall && Mux(a_isPut, (doneAW || out_arw.ready) && out_w.ready, out_arw.ready) && !in.d.valid
+      in.a.ready := !stall && Mux(a_isPut, (doneAW || out_arw.ready) && out_w.ready, out_arw.ready)
       out_arw.valid := !stall && in.a.valid && Mux(a_isPut, !doneAW && out_w.ready, Bool(true))
 
       out_w.valid := !stall && in.a.valid && a_isPut && (doneAW || out_arw.ready)
@@ -236,8 +238,20 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
 
       in.d.bits := Mux(r_wins, r_d, b_d)
       in.d.bits.data := out.r.bits.data // avoid a costly Mux
-      val addrReg = RegEnable(in.a.bits.address, in.a.valid)
-      in.d.bits.address := addrReg
+
+      //Tracking address for each transaction
+      val enVec = Reg(Vec(/*edgeIn.client.endSourceId*/200,  Bool()))
+      val falseVec = Vec.fill(200){false.B}
+      when (in.a.valid) {
+        enVec := falseVec
+        enVec(in.a.bits.source) := true.B
+      } .otherwise {
+        enVec := falseVec
+      }
+      val addrTable: Seq[UInt] = (0 until 200).map( j => RegEnable(in.a.bits.address, enVec(j)))
+      in.d.bits.address := /*RegEnable(in.a.bits.address, in.a.valid)*/addrTable(in.d.bits.source)
+
+
       // We need to track if any reads or writes are inflight for a given ID.
       // If the opposite type arrives, we must stall until it completes.
       val a_sel = UIntToOH(arw.id, edgeOut.master.endId).asBools
