@@ -240,16 +240,18 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
       in.d.bits.data := out.r.bits.data // avoid a costly Mux
 
       //Tracking address for each transaction
+      val addrReg = Reg(in.a.bits.address)
       val enVec = Reg(Vec(/*edgeIn.client.endSourceId*/200,  Bool()))
       val falseVec = Vec.fill(200){false.B}
       when (in.a.valid) {
         enVec := falseVec
         enVec(in.a.bits.source) := true.B
+        addrReg := in.a.bits.address
       } .otherwise {
         enVec := falseVec
       }
-      val addrTable: Seq[UInt] = (0 until 200).map( j => RegEnable(in.a.bits.address, enVec(j)))
-      in.d.bits.address := /*RegEnable(in.a.bits.address, in.a.valid)*/addrTable(in.d.bits.source)
+      val addrTable: Seq[UInt] = (0 until 200).map( j => RegEnable(addrReg, enVec(j)))
+      in.d.bits.address := /*RegEnable(in.a.bits.address, in.a.valid)*/addrTable(Mux(r_wins, r_source, b_source))
 
 
       // We need to track if any reads or writes are inflight for a given ID.

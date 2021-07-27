@@ -134,6 +134,7 @@ class TLBroadcast(params: TLBroadcastParams)(implicit p: Parameters) extends Laz
       }
       val d_mshr = OHToUInt(d_trackerOH)
       d_normal.bits.sink := d_mshr
+      d_normal.bits.address := out.d.bits.address
       assert (!d_normal.valid || (d_trackerOH.orR() || d_normal.bits.opcode === TLMessages.ReleaseAck))
 
       // A tracker response is anything neither dropped nor a ReleaseAck

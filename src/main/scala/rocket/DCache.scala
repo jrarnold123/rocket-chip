@@ -1352,7 +1352,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       temp := s2_vaddr(idxMSB, idxLSB) =/= tl_out.d.bits.address(idxMSB, idxLSB) && valid
       val index = Wire(UInt(width=6))
       when (temp) {
-        index := 0.U
+        index := 0.U//s2_vaddr(idxMSB, idxLSB)
       } .otherwise {
         index := tl_out.d.bits.address(idxMSB, idxLSB)
       }
