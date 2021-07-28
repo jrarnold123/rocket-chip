@@ -185,60 +185,57 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val grantAck = edge.GrantAck(tl_out.d.bits)
 
     def newFSM() = {
-      //tl_out_a.valid := false
-      //tl_out_c.valid := false
       tl_out_e.valid := false
-      metaValid := false
-      val message = Wire(UInt())
+
       val state = Wire(CustomClientMetadata(CustomClientStates.I))
-      message := selectMessageToHandle()
+      val (message, address) = selectMessageToHandle()
+      state := readMeta(address)
+
       when (message === 4.U) { //grant
-        /*state := readMeta(/**/)
-        when (state === ...) {
-          sendMessage
-          metaWrite(...)
-        }*/
-        sendEMessage(grantAck, d_first)
-        writeMetaGrant(meta_hit_state.onGrant(tl_out.d.bits.param))
+        when (state === CustomClientStates.SMg || state === CustomClientStates.IMg) {
+          sendEMessage(grantAck, d_first)
+          writeMetaGrant(CustomClientMetadata(CustomClientStates.M))
+        }
       } .elsewhen (message === 5.U) { //grantData
         sendEMessage(grantAck, d_first)
-        writeMetaGrant(meta_hit_state.onGrant(tl_out.d.bits.param))
+        writeMetaGrant(CustomClientMetadata(CustomClientStates.S))
         writeDataGrant()
       } .elsewhen (message === 6.U) { //releaseAck
-
+        assert(release_ack_wait, "A ReleaseAck was unexpected by the dcache.")
+        release_ack_wait := false
       } .elsewhen (message === 14.U) { //probeBlock
-
+        writeMetaProbe()
       } .elsewhen (message === 16.U) { //read
-        when (!s2_victim_dirty && s2_valid_cached_miss) {
-          sendAMessage(acquire(paddr, meta_hit_state.onAccess(io.cpu.req.bits.cmd)._2), true)
-        } .otherwise {
-          tl_out_a.valid := false.B
+        when (state === CustomClientStates.I) {
+          sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !s2_victim_dirty && s2_valid_cached_miss)
         }
       } .elsewhen (message === 17.U) { //write
-        when (!s2_victim_dirty && s2_valid_cached_miss) {
-          sendAMessage(acquire(paddr, meta_hit_state.onAccess(io.cpu.req.bits.cmd)._2), true)
-        } .otherwise {
-          tl_out_a.valid := false.B
+        when (state === CustomClientStates.I) {
+          sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !s2_victim_dirty && s2_valid_cached_miss)
+        } .elsewhen (state === CustomClientStates.S) {
+          sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss)
         }
       }
     }
 
     def selectMessageToHandle(): UInt = {
-      val out = Wire(UInt())
-      out := 0
+      val outOp = Wire(UInt())
+      val outAd = Wire(UInt())
       when (tl_out.d.valid) {
-        metaIdx := 
-        out := tl_out.d.bits.opcode
+        outOp := tl_out.d.bits.opcode
+        outAd := tl_out.d.bits.address
       } .elsewhen (tl_out.b.valid) {
-        out := 8.U + tl_out.b.bits.opcode
+        outOp := tl_out.b.bits.opcode + 8.U
+        outAd := tl_out.b.bits.address
       } .elsewhen (io.cpu.req.valid && !io.cpu.s2_kill) {
+        outAd := io.cpu.req.bits.addr
         when (isRead(io.cpu.req.bits.cmd)) {
-          out := 16.U
+          outOp := 16.U
         } .otherwise {
-          out := 17.U
+          outOp := 17.U
         }
       }
-      out
+      (outOp, outAd)
     }
 
     def writeDataCPUWrite() = {
@@ -343,7 +340,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       way := refill_way
       val index = tl_out.d.bits.address(idxMSB, idxLSB)
       val addr = tl_out.d.bits.address
-      val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, newState).asUInt)//s2_hit_state.onGrant(s2_req.cmd, tl_out.d.bits.param)).asUInt)
+      val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, newState).asUInt)
       val wmask = if (nWays == 1) Seq(true.B) else way.asBools
       when (valid) {
         addrToUse := addr

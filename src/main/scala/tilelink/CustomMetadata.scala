@@ -8,35 +8,17 @@ import freechips.rocketchip.rocket.constants.MemoryOpConstants
 import freechips.rocketchip.util._
 
 object CustomClientStates {
-  val width = 2
-  /*val M = UInt(0, width)
-  val Mr = UInt(1, width)
-  val Mrr = UInt(2, width)
-  val E = UInt(3, width)
-  val Er = UInt(4, width)
-  val Err = UInt(5, width)
-  val SMg = UInt(6, width)
-  val SMgr = UInt(7, width)
-  val SMgrr = UInt(8, width)
-  val S = UInt(9, width)
-  val Sr = UInt(10, width)
-  val ISrr = UInt(11, width)
-  val ISgd = UInt(12, width)
-  val ISgdr = UInt(13, width)
-  val ISgdrr = UInt(14, width)
-  val IMg = UInt(15, width)
-  val IMgr = UInt(16, width)
-  val IMgrr = UInt(17, width)
-  val I = UInt(18, width)
-  val Ir = UInt(19, width)
-  val IIrr = UInt(20, width)*/
+  val width = 3
   def I = UInt(0, width)
-  def S  = UInt(1, width)
-  def E   = UInt(2, width)
-  def M   = UInt(3, width)
+  def IMg = UInt(1, width)
+  def ISgd = UInt(2, width)
+  def S  = UInt(3, width)
+  def SMg = UInt(4, width)
+  def E   = UInt(5, width)
+  def M   = UInt(6, width)
 
-  def hasReadPermission(state: UInt): Bool = state > I
-  def hasWritePermission(state: UInt): Bool = state > S
+  def hasReadPermission(state: UInt): Bool = state > ISgd
+  def hasWritePermission(state: UInt): Bool = state > SMg
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
@@ -82,7 +64,7 @@ class CustomClientMetadata extends Bundle {
         Cat(wi, M)   -> (Bool(true),  M),
         Cat(wi, S)   -> (Bool(true),  S),
         Cat(wr, M)   -> (Bool(true),  M),
-        Cat(wr, S)   -> (Bool(true),  M),
+        Cat(wr, E)   -> (Bool(true),  M),
         //(effect, am now) -> (was a miss,  param)
         Cat(rd, I) -> (Bool(false), NtoB),
         Cat(wi, S)  -> (Bool(false), BtoT),

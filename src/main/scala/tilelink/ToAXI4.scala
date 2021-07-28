@@ -1,5 +1,3 @@
-// See LICENSE.SiFive for license details.
-
 package freechips.rocketchip.tilelink
 
 import Chisel._
@@ -106,7 +104,6 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
       val map = new TLtoAXI4IdMap(edgeIn.client)
       val sourceStall = Wire(Vec(edgeIn.client.endSourceId, Bool()))
       val sourceTable = Wire(Vec(edgeIn.client.endSourceId, out.aw.bits.id))
-      val backTable = Wire(Vec(edgeOut.master.endId, in.a.bits.source))
       val idStall = Wire(init = Vec.fill(edgeOut.master.endId) { Bool(false) })
       var idCount = Array.fill(edgeOut.master.endId) { None:Option[Int] }
 
@@ -115,7 +112,6 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
           val id = axi4Id.start + (if (fifo) 0 else i)
           sourceStall(tlId.start + i) := idStall(id)
           sourceTable(tlId.start + i) := UInt(id)
-          backTable(UInt(id)) := sourceTable(tlId.start + i)
         }
         if (fifo) { idCount(axi4Id.start) = Some(tlId.size) }
       }
@@ -238,21 +234,6 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
 
       in.d.bits := Mux(r_wins, r_d, b_d)
       in.d.bits.data := out.r.bits.data // avoid a costly Mux
-
-      //Tracking address for each transaction
-      val addrReg = Reg(in.a.bits.address)
-      val enVec = Reg(Vec(/*edgeIn.client.endSourceId*/200,  Bool()))
-      val falseVec = Vec.fill(200){false.B}
-      when (in.a.valid) {
-        enVec := falseVec
-        enVec(in.a.bits.source) := true.B
-        addrReg := in.a.bits.address
-      } .otherwise {
-        enVec := falseVec
-      }
-      val addrTable: Seq[UInt] = (0 until 200).map( j => RegEnable(addrReg, enVec(j)))
-      in.d.bits.address := /*RegEnable(in.a.bits.address, in.a.valid)*/addrTable(Mux(r_wins, r_source, b_source))
-
 
       // We need to track if any reads or writes are inflight for a given ID.
       // If the opposite type arrives, we must stall until it completes.

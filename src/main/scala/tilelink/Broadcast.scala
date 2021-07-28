@@ -134,7 +134,7 @@ class TLBroadcast(params: TLBroadcastParams)(implicit p: Parameters) extends Laz
       }
       val d_mshr = OHToUInt(d_trackerOH)
       d_normal.bits.sink := d_mshr
-      d_normal.bits.address := out.d.bits.address
+      d_normal.bits.address := Mux1H(d_trackerOH, trackers.map(_.addressOut))
       assert (!d_normal.valid || (d_trackerOH.orR() || d_normal.bits.opcode === TLMessages.ReleaseAck))
 
       // A tracker response is anything neither dropped nor a ReleaseAck
@@ -415,6 +415,7 @@ class TLBroadcastTracker(id: Int, lineBytes: Int, caches: Int, bufferless: Boole
     val need_d = Output(Bool())
     val cacheOH = Output(UInt(caches.W))
     val clearOH = Input(UInt(caches.W))
+    val addressOut = Output(UInt())
   })
 
   val lineShift = log2Ceil(lineBytes)
@@ -480,6 +481,7 @@ class TLBroadcastTracker(id: Int, lineBytes: Int, caches: Int, bufferless: Boole
   io.source := source
   io.line := address >> lineShift
   io.cacheOH := cacheOH
+  io.addressOut := address
 
   val i_data = Wire(Decoupled(new TLBroadcastData(edgeIn.bundle)))
   val o_data = Queue(i_data, if (bufferless) 1 else (lineBytes / edgeIn.manager.beatBytes), pipe=bufferless)

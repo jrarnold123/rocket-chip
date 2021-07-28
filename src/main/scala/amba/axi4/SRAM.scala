@@ -1,5 +1,3 @@
-// See LICENSE.SiFive for license details.
-
 package freechips.rocketchip.amba.axi4
 
 import Chisel._
