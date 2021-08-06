@@ -62,7 +62,7 @@ class CustomClientMetadata extends Bundle {
         Cat(rd, E)   -> (Bool(true),  E),
         Cat(rd, S)  -> (Bool(true),  S),
         Cat(wi, M)   -> (Bool(true),  M),
-        Cat(wi, S)   -> (Bool(true),  S),
+        Cat(wi, E)   -> (Bool(true),  E),
         Cat(wr, M)   -> (Bool(true),  M),
         Cat(wr, E)   -> (Bool(true),  M),
         //(effect, am now) -> (was a miss,  param)
