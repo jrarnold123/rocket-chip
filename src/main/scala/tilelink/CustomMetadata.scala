@@ -8,17 +8,14 @@ import freechips.rocketchip.rocket.constants.MemoryOpConstants
 import freechips.rocketchip.util._
 
 object CustomClientStates {
-  val width = 3
+  val width = 2
   def I = UInt(0, width)
-  def IMg = UInt(1, width)
-  def ISgd = UInt(2, width)
-  def S  = UInt(3, width)
-  def SMg = UInt(4, width)
-  def E   = UInt(5, width)
-  def M   = UInt(6, width)
+  def S  = UInt(1, width)
+  def E   = UInt(2, width)
+  def M   = UInt(3, width)
 
-  def hasReadPermission(state: UInt): Bool = state > ISgd
-  def hasWritePermission(state: UInt): Bool = state > SMg
+  def hasReadPermission(state: UInt): Bool = state > I
+  def hasWritePermission(state: UInt): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
@@ -49,6 +46,16 @@ class CustomClientMetadata extends Bundle {
 
   /** Is the block's data present in this cache */
   def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I
+
+  def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
+
+  def isDirty(): Bool = state >= CustomClientStates.M
+
+  def hasReadPermission(): Bool = state > CustomClientStates.I
+
+  def hasWritePermission(): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
+
+  //def hasData(): Bool = state >=
 
   /** Determine whether this cmd misses, and the new state (on hit) or param to be sent (on miss) */
   private def growStarter(cmd: UInt): (Bool, UInt) = {
@@ -96,7 +103,7 @@ class CustomClientMetadata extends Bundle {
     MuxLookup(param, I, Seq(
     //(effect param) -> (next)
       toB   -> S,
-      toT   -> M)).asUInt
+      toT   -> E)).asUInt
   }
 
   /** Does this cache have permissions on this block sufficient to perform op,
@@ -104,6 +111,19 @@ class CustomClientMetadata extends Bundle {
   def onAccess(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
     val r = growStarter(cmd)
     (r._1, r._2, CustomClientMetadata(r._2))
+  }
+
+  def onWrite(cmd: UInt): CustomClientMetadata = {
+    import CustomMemoryOpCategories._
+    assert(isWrite(cmd), "PLEASE")
+    val temp = CustomClientMetadata(CustomClientStates.I)
+    val temp2 = Wire(UInt(0))
+    when (state === CustomClientStates.E) {
+      temp := CustomClientMetadata(CustomClientStates.M)
+    } .otherwise {
+      temp := CustomClientMetadata(state)
+    }
+    temp
   }
 
   /** Does a secondary miss on the block require another Acquire message */

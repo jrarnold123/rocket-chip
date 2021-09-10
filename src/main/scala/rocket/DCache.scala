@@ -783,7 +783,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     readMetaProbe()
 
-    writeDataRelease()
+    readDataRelease()
 
     writeMetaRelease()
     when (metaArb.io.in(4).fire()) { release_state := s_ready }
@@ -1074,6 +1074,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       when (s2_victimize) { //evicting someone as a result of a cache miss (or error or flush)
         assert(s2_valid_flush_line || io.cpu.s2_nack) //assertion was here before me... leave while testing but remove in ProtoGen maybe?
         val discard_line = s2_valid_flush_line && s2_req.size(1) //temp variable... unsure of exact purpose but necessary
+
+        //jamesTODO: NEED TO STALL if !.isStable()
+
         when (s2_victim_dirty && !discard_line) { //if it's dirty
           release_state := s_voluntary_writeback //then we need to write the data back
         } .elsewhen (!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_readwrite && !s2_hit_valid)) {
@@ -1085,19 +1088,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       }
 
       //D Channel Inputs
-      when (grantToT) { //grant providing write permission
-        when (s2_hit_state === CustomClientStates.S || s2_hit_state === CustomClientStates.I || s2_hit_state === CustomClientStates.E || s2_hit_state === CustomClientStates.M) { //not sure why E and M can get this, but breaks if I dont... likely a logic error somewhere else because Acquire should never be sent on an E or M
-          sendEMessage(grantAck, d_first) //send a grantAck on the first cycle of the message
-          writeMetaGrant(CustomClientMetadata(CustomClientStates.E)) //update metadata to E state
-          writeDataGrant() //update data with new data
-        }
-      }
-      when (grantToB) { //grant providing read permission
-        when (s2_hit_state === CustomClientStates.I) {
-          sendEMessage(grantAck, d_first) //send a grantAck on the first cycle of the message
-          writeMetaGrant(CustomClientMetadata(CustomClientStates.S)) //update metadata to S state
-          writeDataGrant() //update data with new data
-        }
+      when (grantIsCached && tl_out.d.valid) { //grant providing write permission
+        sendEMessage(grantAck, d_first) //send a grantAck on the first cycle of the message
+        writeMetaGrant(s2_hit_state.onGrant(tl_out.d.bits.param)) //update metadata to E state
+        writeDataGrant() //update data with new data
       }
       when (releaseAck) {
         release_ack_wait := false //stop blocking transactions now that the Release is confirmed/finalized
@@ -1106,46 +1100,40 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       //B Channel Inputs
       when (s2_probe) { //when probeBlock reaches s2
         s1_nack := true //nacks the instruction to buy more time if we need to writeback
-        when (s2_probe_state === CustomClientStates.M) {
+        when (s2_probe_state.isDirty() ) {
           sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid)) //M will conflict with any probe and needs to be written back
           release_state := s_probe_rep_dirty //this allows FSM to continue writing a multi-cycle message
-        } .elsewhen (s2_probe_state === CustomClientStates.E || s2_probe_state === CustomClientStates.S) {
+        } .elsewhen (s2_probe_state.isValid()) {
           sendCMessage(cleanProbeAckMessage, true.B) //E and S have no data to be written back, unclear whether metadata needs to be modified yet
           release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean) //finish sending the reply and then change to s_probe_write_meta to determine what metadata changes need to occur
-          //jamesToDo: see if I can change this to always proceed to s_probe_write_meta since there's no data being sent... should take just one cycle
-          //jamesToDo: if that works, then add a s1_nack := !releaseDone
-        } .elsewhen (s2_probe_state === CustomClientStates.I) {  
+        } .elsewhen (!s2_probe_state.isValid()) {
           s1_nack := !releaseDone  //no need to nack if we finish right away!
           sendCMessage(nackResponseMessage, true.B) //I never conflicts
           release_state := Mux(releaseDone, s_ready, s_probe_rep_miss) //finish sending message and then we can move forward
-          //jamesToDo: see if this can proceed directly to s_ready since no data is being written and message should send in 1 cycle
         }
       } 
 
       //CPU Inputs
       when (CPURead) { //covers anything that isn't a Write or WriteIntent
-        when (s2_hit_state === CustomClientStates.I) { //We only need to send a message if we miss... misses on Reads are only I
+        when (!s2_hit_state.hasReadPermission()) { //We only need to send a message if we miss... misses on Reads are only I
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !s2_victim_dirty && s2_valid_cached_miss)
         } .otherwise {
         }
       }
       when (CPUWrite) {
-        when (s2_hit_state === CustomClientStates.I) {
+        when (!s2_hit_state.isValid()) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss, I->E
-        } .elsewhen (s2_hit_state === CustomClientStates.S) {
+        } .elsewhen (!s2_hit_state.hasWritePermission()) { //has data but needs permissions
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss S->E
-        } .elsewhen (s2_hit_state === CustomClientStates.E) { //don't need to request extra permissions, but do need to change metadata
-          s2_new_hit_state := CustomClientMetadata(CustomClientStates.M) //hit E->M
-        } .otherwise {
+        } .otherwise {  //already has permissions, update state if necessary
+          s2_new_hit_state := s2_hit_state.onWrite()
         }
       }
       when (CPUWriteIntent) { //prefetching write permissions early
-        when (s2_hit_state === CustomClientStates.I) {
+        when (!s2_hit_state.isValid()) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss I->E
-        } .elsewhen (s2_hit_state === CustomClientStates.S) {
+        } .elsewhen (!s2_hit_state.hasWritePermission()) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss S->E
-        } .elsewhen (s2_hit_state === CustomClientStates.E) { //no data is written yet so still in E state
-        } .otherwise {
         }
       }
 
@@ -1175,7 +1163,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       val eccMask = ~UInt(0, wordBytes / eccBytes)
       writeDataHelper(addr, way, data, wordMask, eccMask, write, valid, 1.U)
     }
-    def writeDataRelease() = { //jamesTODO: rename to readDataRelease because this reads out the data that needs to be sent in release message
+    def readDataRelease() = { //Reads out the data that needs to be sent in release message
       val valid = inWriteback && releaseDataBeat < refillCycles
       val data = dataArb.io.in(1).bits.wdata
       val write = false
