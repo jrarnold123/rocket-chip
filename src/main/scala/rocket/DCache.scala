@@ -157,6 +157,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       Queue(tl_out_a, a_queue_depth, flow = true)
     }
 
+    //val lastCPUAddr = RegEnable(io.cpu.req.bits.addr, io.cpu.req.valid) //jamesToDid added, then removed
+
 
     val (tl_out_c, release_queue_empty) = // ! (tl_out.c, true.B)
       if (cacheParams.acquireBeforeRelease) { // ! false
@@ -407,8 +409,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_victim_tag = Mux(s2_valid_data_error || s2_valid_flush_line, s2_req.addr(paddrBits-1, tagLSB), Mux1H(s2_victim_way, s2_meta_corrected).tag)
     val s2_victim_state = Mux(s2_hit_valid, s2_hit_state, Mux1H(s2_victim_way, s2_meta_corrected).coh)
 
-    val (s2_prb_ack_data, s2_report_param, probeNewCoh)= s2_probe_state.onProbe(probe_bits.param) //jamesTODO: get rid of dependence on CustomMetadata
-    val (s2_victim_dirty, s2_shrink_param, voluntaryNewCoh) = s2_victim_state.onCacheControl(M_FLUSH) //jamesTODO: get rid of dependence on CustomMetaData
+    val (s2_prb_ack_data, s2_report_param, probeNewCoh)= s2_probe_state.onProbe(probe_bits.param) 
+    val (s2_victim_dirty, s2_shrink_param, voluntaryNewCoh) = s2_victim_state.onCacheControl(M_FLUSH)
     dontTouch(s2_victim_dirty)
     val s2_update_meta = s2_hit_state =/= s2_new_hit_state
     val s2_dont_nack_uncached = s2_valid_uncached_pending && tl_out_a.ready
@@ -703,8 +705,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val grantToT = grantIsCached && tl_out.d.valid && tl_out.d.bits.param === TLPermissions.toT
     val grantToB = grantIsCached && tl_out.d.valid && tl_out.d.bits.param === TLPermissions.toB
     val releaseAck = tl_out.d.valid && tl_out.d.bits.opcode === 6.U 
-    val CPUWrite = io.cpu.req.valid && !io.cpu.s2_kill && isWrite(s2_req.cmd)
-    val CPUWriteIntent = io.cpu.req.valid && !io.cpu.s2_kill && isWriteIntent(s2_req.cmd)
+    val CPUWrite = /*io.cpu.req.valid &&*/ !io.cpu.s2_kill && isWrite(s2_req.cmd) //jamesTODID commented out valid here and below
+    val CPUWriteIntent = /*io.cpu.req.valid &&*/ !io.cpu.s2_kill && isWriteIntent(s2_req.cmd)
     val CPURead = /*io.cpu.req.valid && !io.cpu.s2_kill && isRead(s2_req.cmd)*/ !CPUWrite && !CPUWriteIntent// && io.cpu.req.valid && !io.cpu.s2_kill
 
 
@@ -1068,7 +1070,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     def newFSM() = {
       tl_out_e.valid := false //update to false each cycle, then assign true where necessary (in sendEMessage)
-      s2_hit := io.cpu.req.valid && !io.cpu.s2_kill || (CPURead && !(s2_hit_state === CustomClientStates.I)) //easier to hard-code this like this than within the FSM since it's not in ProtoGen's logic
+      s2_hit := io.cpu.req.valid && !io.cpu.s2_kill || ((CPURead || (!io.cpu.req.valid)) && s2_hit_state.isValid()) //easier to hard-code this like this than within the FSM since it's not in ProtoGen's logic
+      //jamesToDid: added the !io.cpu.req.valid
 
       //Eviction
       when (s2_victimize) { //evicting someone as a result of a cache miss (or error or flush)
@@ -1100,7 +1103,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       //B Channel Inputs
       when (s2_probe) { //when probeBlock reaches s2
         s1_nack := true //nacks the instruction to buy more time if we need to writeback
-        when (s2_probe_state.isDirty() ) {
+        when (s2_prb_ack_data) { //changes from .isDirty
           sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid)) //M will conflict with any probe and needs to be written back
           release_state := s_probe_rep_dirty //this allows FSM to continue writing a multi-cycle message
         } .elsewhen (s2_probe_state.isValid()) {
@@ -1116,7 +1119,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       //CPU Inputs
       when (CPURead) { //covers anything that isn't a Write or WriteIntent
         when (!s2_hit_state.hasReadPermission()) { //We only need to send a message if we miss... misses on Reads are only I
-          sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !s2_victim_dirty && s2_valid_cached_miss)
+          sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !s2_victim_dirty && s2_valid_cached_miss) //jamesToDo what about MI protocol?
         } .otherwise {
         }
       }
@@ -1126,7 +1129,12 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         } .elsewhen (!s2_hit_state.hasWritePermission()) { //has data but needs permissions
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss S->E
         } .otherwise {  //already has permissions, update state if necessary
-          s2_new_hit_state := s2_hit_state.onWrite()
+          when (io.cpu.req.valid) {
+            //jamesToDo: what about hitting on O?  notifyL2
+            //s2_new_hit_state := s2_hit_state.onWrite()
+            s2_new_hit_state := s2_hit_state.onAccess(s2_req.cmd)._3
+            //jamesToDid changes this line
+          } //jamesToDid added the when statement here
         }
       }
       when (CPUWriteIntent) { //prefetching write permissions early
@@ -1229,8 +1237,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       val write = true
       val way = Wire(Bits(width = nWays))
       way := refill_way
-      val index = tl_out.d.bits.address(idxMSB, idxLSB)
-      val addr = tl_out.d.bits.address
+      val index = s2_vaddr(idxMSB, idxLSB)//lastCPUAddr(idxMSB, idxLSB)//tl_out.d.bits.address(idxMSB, idxLSB) jamesToDid
+      val addr = /*lastCPUAddr*/Cat(io.cpu.req.bits.addr >> untagBits, s2_vaddr(idxMSB, 0)) //tl_out.d.bits.address jamesToDid
       val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, newState).asUInt)
       val wmask = if (nWays == 1) Seq(true.B) else way.asBools
       writeMetaHelper(addr, way, index, data, write, valid, 3.U)

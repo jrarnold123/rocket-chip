@@ -6,6 +6,7 @@ package freechips.rocketchip.system
 import freechips.rocketchip.config.Config
 import freechips.rocketchip.subsystem._
 import freechips.rocketchip.groundtest.WithTraceGen
+import sifive.blocks.inclusivecache
 
 class WithJtagDTMSystem extends freechips.rocketchip.subsystem.WithJtagDTM
 class WithDebugSBASystem extends freechips.rocketchip.subsystem.WithDebugSBA
@@ -21,8 +22,9 @@ class BaseConfig extends Config(
   new BaseSubsystemConfig()
 )
 
-class DefaultConfig extends Config(new WithNBigCores(1) ++ new WithCoherentBusTopology ++ new BaseConfig)
+class DefaultConfig extends Config(new WithNBigCores(1) ++ new WithCoherentBusTopology ++ new WithInclusiveCache ++ new BaseConfig) //jamesToDid: added wIC here
 
+class L2CacheConfig extends Config(new WithInclusiveCache ++ new DefaultConfig) //jamesToDid: added this line
 class DefaultBufferlessConfig extends Config(new WithBufferlessBroadcastHub ++ new DefaultConfig)
 class DefaultSmallConfig extends Config(new WithNSmallCores(2) ++ new WithCoherentBusTopology ++ new BaseConfig) // jamesTODO: changed withNSmallCores to 2, maybe breaks
 class DefaultRV32Config extends Config(new WithRV32 ++ new DefaultConfig)

@@ -52,6 +52,8 @@ endif
 ifeq ($(SUITE),RocketSuiteB)
 PROJECT=freechips.rocketchip.system
 CONFIGS=$(PROJECT).DefaultBufferlessConfig
+#CONFIGS=$(PROJECT).L2CacheConfig
+#JamesToDo: modified the above
 endif
 
 ifeq ($(SUITE),RocketSuiteC)

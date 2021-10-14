@@ -55,6 +55,20 @@ class CustomClientMetadata extends Bundle {
 
   def hasWritePermission(): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
 
+  def notifyL2(cmd: UInt): (Bool) = {
+    import CustomMemoryOpCategories._
+    import TLPermissions._
+    import CustomClientStates._
+    val c = categorize(cmd)
+    //Don't need to assert false for all of them, only need to assert true
+    //This probably breaks if the Seq has nothing in it, so I added two random ones
+    MuxTLookup(Cat(c, state), (Bool(false)), Seq(
+      //Cat(wr,O) -> (Bool(true)),
+      Cat(wr, M) -> (Bool(false)),
+      Cat(rd, E) -> (Bool(false))))
+  }
+
+
   //def hasData(): Bool = state >=
 
   /** Determine whether this cmd misses, and the new state (on hit) or param to be sent (on miss) */
@@ -88,22 +102,40 @@ class CustomClientMetadata extends Bundle {
     import TLPermissions._
     import CustomClientStates._
     val c = categorize(cmd)
+    val next = Wire(UInt())
     //assert(c === rd || param === toT, "Client was expecting trunk permissions.")
 
-    MuxLookup(Cat(c, param), I, Seq(
-    //(effect param) -> (next)
-      Cat(rd, toB)   -> S,
-      Cat(rd, toT)   -> E,
-      Cat(wi, toT)   -> E,
-      Cat(wr, toT)   -> M)).asUInt
+    when (cmd === rd) {
+      when (param === toB) {
+        next := S
+      } .elsewhen (param === toT) {
+        next := E
+      }
+    } .elsewhen (cmd === wi) {
+      when (param === toT) {
+        next := E
+      }
+    } .elsewhen(cmd === wr) {
+      when (param === toT) {
+        next := M
+      }
+    }
+    next
   }
+
   private def growFinisher(param: UInt): UInt = {
     import TLPermissions._
     import CustomClientStates._
-    MuxLookup(param, I, Seq(
-    //(effect param) -> (next)
-      toB   -> S,
-      toT   -> E)).asUInt
+    val nextState = Wire(UInt())
+    
+    when (param === toB) {
+      nextState := S
+    } .elsewhen (param === toT) {
+      nextState := E
+    } .otherwise {
+      nextState := I
+    }
+    nextState
   }
 
   /** Does this cache have permissions on this block sufficient to perform op,
@@ -113,9 +145,7 @@ class CustomClientMetadata extends Bundle {
     (r._1, r._2, CustomClientMetadata(r._2))
   }
 
-  def onWrite(cmd: UInt): CustomClientMetadata = {
-    import CustomMemoryOpCategories._
-    assert(isWrite(cmd), "PLEASE")
+  def onWrite(): CustomClientMetadata = {
     val temp = CustomClientMetadata(CustomClientStates.I)
     val temp2 = Wire(UInt(0))
     when (state === CustomClientStates.E) {
@@ -148,20 +178,65 @@ class CustomClientMetadata extends Bundle {
   private def shrinkHelper(param: UInt): (Bool, UInt, UInt) = {
     import CustomClientStates._
     import TLPermissions._
-    MuxTLookup(Cat(param, state), (Bool(false), UInt(0), UInt(0)), Seq(
-    //(wanted, am now)  -> (hasDirtyData, resp, next)
-      Cat(toT, M)   -> (Bool(true),  TtoT, E),
-      Cat(toT, E)   -> (Bool(false), TtoT, E),
-      Cat(toT, S)  -> (Bool(false), BtoB, S),
-      Cat(toT, I) -> (Bool(false), NtoN, I),
-      Cat(toB, M)   -> (Bool(true),  TtoB, S),
-      Cat(toB, E)   -> (Bool(false), TtoB, S),  // Policy: Don't notify on clean downgrade
-      Cat(toB, S)  -> (Bool(false), BtoB, S),
-      Cat(toB, I) -> (Bool(false), NtoN, I),
-      Cat(toN, M)   -> (Bool(true),  TtoN, I),
-      Cat(toN, E)   -> (Bool(false), TtoN, I), // Policy: Don't notify on clean downgrade
-      Cat(toN, S)  -> (Bool(false), BtoN, I), // Policy: Don't notify on clean downgrade
-      Cat(toN, I) -> (Bool(false), NtoN, I)))
+    val dirty_data = Wire(Bool(false))
+    val ack_param = Wire(UInt())
+    val new_state = Wire(UInt())
+    when (param ===  toT) {
+      when (state === M) {
+        dirty_data := Bool(true)
+        ack_param := TtoT
+        new_state := E
+      } .elsewhen (state === E) {
+        dirty_data := Bool(false)
+        ack_param := TtoT
+        new_state := E
+      } .elsewhen (state === S) {
+        dirty_data := Bool(false)
+        ack_param := BtoB
+        new_state := S
+      } .elsewhen (state === I) {
+        dirty_data := Bool(false)
+        ack_param := NtoN
+        new_state := I
+      }
+    } .elsewhen (param === toB) {
+      when (state === M) {
+        dirty_data := Bool(true)
+        ack_param := TtoB
+        new_state := S
+      } .elsewhen (state === E) {
+        dirty_data := Bool(false)
+        ack_param := TtoB
+        new_state := S
+      } .elsewhen (state === S) {
+        dirty_data := Bool(false)
+        ack_param := BtoB
+        new_state := S
+      } .elsewhen (state === I) {
+        dirty_data := Bool(false)
+        ack_param := NtoN
+        new_state := I
+      }
+    } .elsewhen (param === toN) {
+      when (state === M) {
+        dirty_data := Bool(true)
+        ack_param := TtoN
+        new_state := I
+      } .elsewhen (state === E) {
+        dirty_data := Bool(false)
+        ack_param := TtoN
+        new_state := I
+      } .elsewhen (state === S) {
+        dirty_data := Bool(false)
+        ack_param := BtoN
+        new_state := I
+      } .elsewhen (state === I) {
+        dirty_data := Bool(false)
+        ack_param := NtoN
+        new_state := I
+      }
+    } 
+    (dirty_data, ack_param, new_state)
   }
 
   /** Translate cache control cmds into Probe param */
