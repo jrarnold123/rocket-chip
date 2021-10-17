@@ -157,9 +157,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       Queue(tl_out_a, a_queue_depth, flow = true)
     }
 
-    //val lastCPUAddr = RegEnable(io.cpu.req.bits.addr, io.cpu.req.valid) //jamesToDid added, then removed
-
-
     val (tl_out_c, release_queue_empty) = // ! (tl_out.c, true.B)
       if (cacheParams.acquireBeforeRelease) { // ! false
         val q = Module(new Queue(tl_out.c.bits.cloneType, cacheDataBeats, flow = true))
@@ -358,7 +355,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_probe_way = RegEnable(s1_hit_way, s1_probe)
     val s2_probe_state = RegEnable(s1_hit_state, s1_probe)
     val s2_hit_way = RegEnable(s1_hit_way, s1_valid_not_nacked)
-    val s2_hit_state = RegEnable(s1_hit_state, s1_valid_not_nacked)
+    val s2_hit_state = RegEnable(s1_hit_state, s1_hit_state, s1_valid_not_nacked)
     val s2_waw_hazard = RegEnable(s1_waw_hazard, s1_valid_not_nacked)
     val s2_store_merge = Wire(Bool())
     val s2_hit_valid = s2_hit_state.isValid()
@@ -698,7 +695,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
 
     // JamesTODO: CONSIDER DELETING THIS IN FAVOR OF THE OTHERWISE STATEMENT IN FSM
-    val newCoh = Wire(init = probeNewCoh)
+    val newCoh = Wire(init = probeNewCoh) //JamesToDo: I believe will only ever hold I since it is assigned to releaseNewCoh... all probes go to I state... that's bad
     releaseWay := s2_probe_way
 
     //Input Types
@@ -738,7 +735,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }
       }
     }
-    writeMetaHit()
+    //writeMetaHit(s2_new_hit_state) //jamesToDid: I don't like this here
 
     // Drive APROT Bits (A channel)
     tl_out_a.bits.user.lift(AMBAProt).foreach { x =>
@@ -1078,8 +1075,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         assert(s2_valid_flush_line || io.cpu.s2_nack) //assertion was here before me... leave while testing but remove in ProtoGen maybe?
         val discard_line = s2_valid_flush_line && s2_req.size(1) //temp variable... unsure of exact purpose but necessary
 
-        //jamesTODO: NEED TO STALL if !.isStable()
-
         when (s2_victim_dirty && !discard_line) { //if it's dirty
           release_state := s_voluntary_writeback //then we need to write the data back
         } .elsewhen (!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_readwrite && !s2_hit_valid)) {
@@ -1097,19 +1092,20 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         writeDataGrant() //update data with new data
       }
       when (releaseAck) {
+        //JamesToDo: this will become a state transition
         release_ack_wait := false //stop blocking transactions now that the Release is confirmed/finalized
       }
 
       //B Channel Inputs
       when (s2_probe) { //when probeBlock reaches s2
         s1_nack := true //nacks the instruction to buy more time if we need to writeback
-        when (s2_prb_ack_data) { //changes from .isDirty
+        when (s2_prb_ack_data) { // jamesToDo: make isDirty
           sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid)) //M will conflict with any probe and needs to be written back
           release_state := s_probe_rep_dirty //this allows FSM to continue writing a multi-cycle message
-        } .elsewhen (s2_probe_state.isValid()) {
+        } .elsewhen (s2_probe_state.isValid()) { //jamesToDo: I think this is correct for stable states too, but not sure
           sendCMessage(cleanProbeAckMessage, true.B) //E and S have no data to be written back, unclear whether metadata needs to be modified yet
           release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean) //finish sending the reply and then change to s_probe_write_meta to determine what metadata changes need to occur
-        } .elsewhen (!s2_probe_state.isValid()) {
+        } .elsewhen (!s2_probe_state.isValid()) { //redundant if statement... could be else
           s1_nack := !releaseDone  //no need to nack if we finish right away!
           sendCMessage(nackResponseMessage, true.B) //I never conflicts
           release_state := Mux(releaseDone, s_ready, s_probe_rep_miss) //finish sending message and then we can move forward
@@ -1117,31 +1113,53 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       } 
 
       //CPU Inputs
-      when (CPURead) { //covers anything that isn't a Write or WriteIntent
-        when (!s2_hit_state.hasReadPermission()) { //We only need to send a message if we miss... misses on Reads are only I
-          sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !s2_victim_dirty && s2_valid_cached_miss) //jamesToDo what about MI protocol?
-        } .otherwise {
+      when (CPURead && io.cpu.req.valid) { //covers anything that isn't a Write or WriteIntent
+        when (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
+          when (!cached_grant_wait) { //jamesToDo: is this if necessary?
+            sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !s2_victim_dirty && s2_valid_cached_miss) //jamesToDo what about MI protocol?
+            //s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
+          } .otherwise {
+            s1_nack := true
+          }
+          //writeMetaHit(s2_hit_state.onMiss(s2_req.cmd))
+          //jamesToDo: update State
+        } .elsewhen (s2_hit_state.hasWritePermission()._2) {
+          s1_nack := true //jamesToDid
+        }.otherwise {
+          //jamesToDo: should have option to update state
+          //jamesToDo: notifyL2?
         }
       }
       when (CPUWrite) {
         when (!s2_hit_state.isValid()) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss, I->E
-        } .elsewhen (!s2_hit_state.hasWritePermission()) { //has data but needs permissions
+          //writeMetaHit(s2_hit_state.onMiss(s2_req.cmd))
+          //jamesToDo: update State
+        } .elsewhen (s2_hit_state.hasWritePermission()._2) {
+          s1_nack := true //jamesToDid
+        }.elsewhen (!s2_hit_state.hasWritePermission()._1) { //has data but needs permissions
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss S->E
+          //writeMetaHit(s2_hit_state.onMiss(s2_req.cmd))
+          //jamesToDo: updateState
         } .otherwise {  //already has permissions, update state if necessary
           when (io.cpu.req.valid) {
             //jamesToDo: what about hitting on O?  notifyL2
-            //s2_new_hit_state := s2_hit_state.onWrite()
             s2_new_hit_state := s2_hit_state.onAccess(s2_req.cmd)._3
-            //jamesToDid changes this line
-          } //jamesToDid added the when statement here
+            writeMetaHit(s2_new_hit_state)
+          }
         }
       }
       when (CPUWriteIntent) { //prefetching write permissions early
         when (!s2_hit_state.isValid()) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss I->E
-        } .elsewhen (!s2_hit_state.hasWritePermission()) {
+          //writeMetaHit(s2_hit_state.onMiss(s2_req.cmd))
+          //jamesToDo: Update State
+        }.elsewhen (s2_hit_state.hasWritePermission()._2) {
+          s1_nack := true //jamesToDid
+        }.elsewhen (!s2_hit_state.hasWritePermission()._1) {
+          //jamesToDo: Update State
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss S->E
+          //writeMetaHit(s2_hit_state.onMiss(s2_req.cmd))
         }
       }
 
@@ -1221,14 +1239,14 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       val wmask = if (nWays == 1) Seq(true.B) else way.asBools
       writeMetaHelper(addr, way, index, data, write, valid, 0.U)
     }
-    def writeMetaHit() = { //currently only used when hits require metadata updates... E->M... I think that's the only possible case
-      val valid = s2_valid_hit_pre_data_ecc_and_waw && s2_update_meta
+    def writeMetaHit(newState: CustomClientMetadata) = { //Misnomer, also used on misses
+      val valid = s2_valid_hit_pre_data_ecc_and_waw && s2_update_meta || (!s2_victim_dirty && s2_valid_cached_miss)
       val write = !io.cpu.s2_kill
       val way = Wire(Bits(width = nWays))
-      way := s2_victim_or_hit_way
+      way := s2_victim_or_hit_way //jamesToDo: is this ok?
       val index = s2_vaddr(idxMSB, idxLSB)
       val addr = Cat(io.cpu.req.bits.addr >> untagBits, s2_vaddr(idxMSB, 0))
-      val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, s2_new_hit_state).asUInt)
+      val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, newState).asUInt)
       val wmask = if (nWays == 1) Seq(true.B) else way.asBools
       writeMetaHelper(addr, way, index, data, write, valid, 2.U)
     }

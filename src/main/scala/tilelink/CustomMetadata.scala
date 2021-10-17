@@ -8,14 +8,30 @@ import freechips.rocketchip.rocket.constants.MemoryOpConstants
 import freechips.rocketchip.util._
 
 object CustomClientStates {
-  val width = 2
+  /*val width = 2
   def I = UInt(0, width)
   def S  = UInt(1, width)
   def E   = UInt(2, width)
   def M   = UInt(3, width)
+  */
+  val width = 4
+  def I = UInt(0, width)
+  def ISd = UInt(1, width)
+  def IMad = UInt(2, width)
+  def IMa = UInt(3, width)
+  def S = UInt(4, width)
+  def SMad = UInt(5, width)
+  def SMa = UInt(6, width)
+  def E = UInt(7, width)
+  def M = UInt(8, width)
+  def MIa = UInt(9, width)
+  def EIa = UInt(10, width)
+  def SIa = UInt(11, width)
+  def IIa = UInt(12, width)
+  
 
-  def hasReadPermission(state: UInt): Bool = state > I
-  def hasWritePermission(state: UInt): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
+  //def hasReadPermission(state: UInt): Bool = state > I
+  //def hasWritePermission(state: UInt): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
@@ -45,31 +61,93 @@ class CustomClientMetadata extends Bundle {
   def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
 
   /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I
+  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I && state <= CustomClientStates.IIa
 
   def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
 
-  def isDirty(): Bool = state >= CustomClientStates.M
-
-  def hasReadPermission(): Bool = state > CustomClientStates.I
-
-  def hasWritePermission(): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
-
-  def notifyL2(cmd: UInt): (Bool) = {
-    import CustomMemoryOpCategories._
-    import TLPermissions._
-    import CustomClientStates._
-    val c = categorize(cmd)
-    //Don't need to assert false for all of them, only need to assert true
-    //This probably breaks if the Seq has nothing in it, so I added two random ones
-    MuxTLookup(Cat(c, state), (Bool(false)), Seq(
-      //Cat(wr,O) -> (Bool(true)),
-      Cat(wr, M) -> (Bool(false)),
-      Cat(rd, E) -> (Bool(false))))
+  def isDirty(): Bool = {
+    (state === CustomClientStates.M || state === CustomClientStates.MIa)
   }
 
+  def hasReadPermission(): (Bool, Bool) = {
+    import CustomClientStates._
+    MuxTLookup(state, (Bool(false),Bool(true)), Seq( //JamesToDo: consider changing default to false false?
+    //jamesToDo: currently the stall is unused
+                                  //canRead     //mustStall
+      I     -> (Bool(false), Bool(false)),
+      ISd   -> (Bool(false), Bool(true)),
+      IMad  -> (Bool(false), Bool(true)),
+      IMa   -> (Bool(false), Bool(true)),
+      S     -> (Bool(true), Bool(false)),
+      SMad  -> (Bool(true), Bool(false)),
+      SMa   -> (Bool(true), Bool(false)),
+      M     -> (Bool(true), Bool(false)),
+      E     -> (Bool(true), Bool(false)),
+      MIa   -> (Bool(false), Bool(true)),
+      EIa   -> (Bool(false), Bool(true)),
+      SIa   -> (Bool(false), Bool(true)),
+      IIa   -> (Bool(false), Bool(true))
+    ))
+  }
 
-  //def hasData(): Bool = state >=
+  def hasWritePermission(): (Bool, Bool) = {
+    import CustomClientStates._
+    MuxTLookup(state, (Bool(false), Bool(true)), Seq(
+                                  //canWrite    //mustStall
+      I     -> (Bool(false), Bool(false)),
+      ISd   -> (Bool(false), Bool(true)),
+      IMad  -> (Bool(false), Bool(true)),
+      IMa   -> (Bool(false), Bool(true)),
+      S     -> (Bool(false), Bool(false)),
+      SMad  -> (Bool(false), Bool(true)),
+      SMa   -> (Bool(false), Bool(true)),
+      M     -> (Bool(true), Bool(false)),
+      E     -> (Bool(true), Bool(false)),
+      MIa   -> (Bool(false), Bool(true)),
+      EIa   -> (Bool(false), Bool(true)),
+      SIa   -> (Bool(false), Bool(true)),
+      IIa   -> (Bool(false), Bool(true))
+    ))
+  }
+
+  def onMiss(cmd: UInt): CustomClientMetadata = {
+    import CustomClientStates._
+    import CustomMemoryOpCategories._
+    val c = categorize(cmd)
+    val out = Wire(UInt())
+
+    when (c === rd) {
+      when (state === I) {
+        out := ISd
+      }
+    }.otherwise {
+      when (state === I) {
+        out := IMad
+      } .elsewhen (state === S) {
+        out := SMad
+      }
+    }
+
+    /*CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
+      Cat(rd, I)    -> ISd,
+      Cat(wi, I)    -> IMad,
+      Cat(wr, I)    -> IMad,
+      Cat(wi, S)    -> SMad,
+      Cat(wr, S)    -> SMad
+    )))*/
+    CustomClientMetadata(out)
+  }
+
+  def onHit(cmd: UInt): CustomClientMetadata = {
+    import CustomClientStates._
+    import CustomMemoryOpCategories._
+    val c = categorize(cmd)
+
+    CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
+      Cat(wi, E)    -> M,
+      Cat(wr, E)    -> M
+    )))
+  }
 
   /** Determine whether this cmd misses, and the new state (on hit) or param to be sent (on miss) */
   private def growStarter(cmd: UInt): (Bool, UInt) = {
