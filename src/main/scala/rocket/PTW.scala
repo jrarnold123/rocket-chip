@@ -22,7 +22,8 @@ class PTWReq(implicit p: Parameters) extends CoreBundle()(p) {
 }
 
 class PTWResp(implicit p: Parameters) extends CoreBundle()(p) {
-  val ae = Bool()
+  val ae_ptw = Bool()
+  val ae_final = Bool()
   val pte = new PTE
   val level = UInt(width = log2Ceil(pgLevels))
   val fragmented_superpage = Bool()
@@ -69,7 +70,7 @@ class PTE(implicit p: Parameters) extends CoreBundle()(p) {
   val r = Bool()
   val v = Bool()
 
-  def table(dummy: Int = 0) = v && !r && !w && !x
+  def table(dummy: Int = 0) = v && !r && !w && !x && !d && !a && !u
   def leaf(dummy: Int = 0) = v && (r || (x && !w)) && a
   def ur(dummy: Int = 0) = sr() && u
   def uw(dummy: Int = 0) = sw() && u
@@ -124,7 +125,8 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
 
   val invalidated = Reg(Bool())
   val count = Reg(UInt(width = log2Up(pgLevels)))
-  val resp_ae = RegNext(false.B)
+  val resp_ae_ptw = RegNext(false.B)
+  val resp_ae_final = RegNext(false.B)
   val resp_fragmented_superpage = RegNext(false.B)
 
   val r_req = Reg(new PTWReq)
@@ -224,12 +226,16 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
     val valid = RegInit(Vec(Seq.fill(coreParams.nL2TLBWays)(0.U(nL2TLBSets.W))))
     val (r_tag, r_idx) = Split(r_req.addr, idxBits)
     val r_valid_vec = valid.map(_(r_idx)).asUInt
+    val r_valid_vec_q = Reg(UInt(coreParams.nL2TLBWays.W))
+    val r_l2_plru_way = Reg(UInt(log2Ceil(coreParams.nL2TLBWays max 1).W))
+    r_valid_vec_q := r_valid_vec
+    r_l2_plru_way := (if (coreParams.nL2TLBWays > 1) l2_plru.way(r_idx) else 0.U)
     when (l2_refill && !invalidated) {
       val entry = Wire(new L2TLBEntry(nL2TLBSets))
-      val wmask = if (coreParams.nL2TLBWays > 1) Mux(r_valid_vec.andR, UIntToOH(l2_plru.way(r_idx)), PriorityEncoderOH(~r_valid_vec)) else 1.U(1.W)
-
       entry := r_pte
       entry.tag := r_tag
+
+      val wmask = if (coreParams.nL2TLBWays > 1) Mux(r_valid_vec_q.andR, UIntToOH(r_l2_plru_way, coreParams.nL2TLBWays), PriorityEncoderOH(~r_valid_vec_q)) else 1.U(1.W)
       ram.write(r_idx, Vec(Seq.fill(coreParams.nL2TLBWays)(code.encode(entry.asUInt))), wmask.asBools)
 
       val mask = UIntToOH(r_idx)
@@ -311,7 +317,8 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
 
   for (i <- 0 until io.requestor.size) {
     io.requestor(i).resp.valid := resp_valid(i)
-    io.requestor(i).resp.bits.ae := resp_ae
+    io.requestor(i).resp.bits.ae_ptw := resp_ae_ptw
+    io.requestor(i).resp.bits.ae_final := resp_ae_final
     io.requestor(i).resp.bits.pte := r_pte
     io.requestor(i).resp.bits.level := count
     io.requestor(i).resp.bits.homogeneous := homogeneous || pageGranularityPMPs
@@ -349,7 +356,8 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
       next_state := s_wait3
       io.dpath.perf.pte_miss := count < pgLevels-1
       when (io.mem.s2_xcpt.ae.ld) {
-        resp_ae := true
+        resp_ae_ptw := true
+        resp_ae_final := false
         next_state := s_ready
         resp_valid(r_req_dest) := true
       }
@@ -357,7 +365,8 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
     is (s_fragment_superpage) {
       next_state := s_ready
       resp_valid(r_req_dest) := true
-      resp_ae := false
+      resp_ae_ptw := false
+      resp_ae_final := false
       when (!homogeneous) {
         count := pgLevels-1
         resp_fragmented_superpage := true
@@ -382,7 +391,8 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
     assert(state === s_req || state === s_wait1)
     next_state := s_ready
     resp_valid(r_req_dest) := true
-    resp_ae := false
+    resp_ae_ptw := false
+    resp_ae_final := false
     count := pgLevels-1
   }
   when (mem_resp_valid) {
@@ -393,7 +403,8 @@ class PTW(n: Int)(implicit edge: TLEdgeOut, p: Parameters) extends CoreModule()(
     }.otherwise {
       l2_refill := pte.v && !invalid_paddr && count === pgLevels-1
       val ae = pte.v && invalid_paddr
-      resp_ae := ae
+      resp_ae_final := ae
+      resp_ae_ptw := false
       when (pageGranularityPMPs && count =/= pgLevels-1 && !ae) {
         next_state := s_fragment_superpage
       }.otherwise {
