@@ -22,7 +22,7 @@ class GroundTestSubsystem(implicit p: Parameters)
   def coreMonitorBundles = Nil
 
   // No PLIC in ground test; so just sink the interrupts to nowhere
-  IntSinkNode(IntSinkPortSimple()) :=* ibus.toPLIC
+  //IntSinkNode(IntSinkPortSimple()) :=* ibus.toPLIC
 
   val tileStatusNodes = tiles.collect { case t: GroundTestTile => t.statusNode.makeSink() }
 

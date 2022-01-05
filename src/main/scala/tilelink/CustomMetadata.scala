@@ -114,9 +114,9 @@ class CustomClientMetadata extends Bundle {
     import CustomClientStates._
     import CustomMemoryOpCategories._
     val c = categorize(cmd)
-    val out = Wire(UInt())
+    //val out = Wire(UInt())
 
-    when (c === rd) {
+    /*when (c === rd) {
       when (state === I) {
         out := ISd
       }
@@ -126,7 +126,7 @@ class CustomClientMetadata extends Bundle {
       } .elsewhen (state === S) {
         out := SMad
       }
-    }
+    }*/
 
     /*CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
       Cat(rd, I)    -> ISd,
@@ -135,7 +135,8 @@ class CustomClientMetadata extends Bundle {
       Cat(wi, S)    -> SMad,
       Cat(wr, S)    -> SMad
     )))*/
-    CustomClientMetadata(out)
+    //CustomClientMetadata(out)
+    CustomClientMetadata(SMa);
   }
 
   def onHit(cmd: UInt): CustomClientMetadata = {
@@ -208,11 +209,15 @@ class CustomClientMetadata extends Bundle {
     
     when (param === toB) {
       nextState := S
-    } .elsewhen (param === toT) {
+    } .otherwise {
+      assert(!isCap(param) || param === toT)
+      nextState := E
+    }
+    /* .elsewhen (param === toT) { //jamesCurrTest
       nextState := E
     } .otherwise {
       nextState := I
-    }
+    }*/
     nextState
   }
 
@@ -225,7 +230,6 @@ class CustomClientMetadata extends Bundle {
 
   def onWrite(): CustomClientMetadata = {
     val temp = CustomClientMetadata(CustomClientStates.I)
-    val temp2 = Wire(UInt(0))
     when (state === CustomClientStates.E) {
       temp := CustomClientMetadata(CustomClientStates.M)
     } .otherwise {

@@ -50,7 +50,8 @@ def main():
   lineCount = 0
   def error(msg):
     sys.stderr.write("Error at line " + str(lineCount) + ": " + msg + "\n")
-    sys.exit(-1)
+    if lineCount>=3:
+      sys.exit(-1)
 
   # Mapping from address to axe address
   addrMap = {}
@@ -80,7 +81,9 @@ def main():
   for line in f:
     # Parse thread id and command
     m = re.search(' *([0-9]+) *: *([^ ]*) (.*)', line)
-    if m == None: error("Expected: <thread-id> ':' <command>")
+    if m == None: 
+      error("Expected: <thread-id> ':' <command>")
+      continue
     tid, cmd, line = m.group(1), m.group(2), m.group(3)
   
     if cmd == 'fence-req':
