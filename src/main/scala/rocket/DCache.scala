@@ -1176,7 +1176,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           when (s2_hit_state.hasReadPermission()._1) { //jamesToDo: this is temporary and will be in CustomMetadata later
             s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd) //This is where the SMa transient state is actually created
             sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !s2_victim_dirty && s2_valid_cached_miss)
-            //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SMa))
+            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SMa))
           } .otherwise {
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !s2_victim_dirty && s2_valid_cached_miss) //miss S->E
           }
