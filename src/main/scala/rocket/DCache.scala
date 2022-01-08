@@ -1143,11 +1143,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       //CPU Inputs
       //assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.SMa)) //s2_hit_state does become SMa
       when (CPURead && io.cpu.req.valid) { //covers anything that isn't a Write or WriteIntent
-        assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.SMa)) //no Reads arrive in SMa
         when (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
           when (!cached_grant_wait) { //jamesToDo: is this if necessary?
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //jamesToDo what about MI protocol?
-            //s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
+            //s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd) //ISad
           } .otherwise {
             s1_nack := true
           }
@@ -1165,8 +1164,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         //assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.SMa)) This one gets triggered, so it will go to the hasWritePermission._2 case next
         when (!s2_hit_state.isValid()) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
-          //writeMetaHit(s2_hit_state.onMiss(s2_req.cmd))
-          //jamesToDo: update State
+          //s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd))
         } .elsewhen (s2_hit_state.hasWritePermission()._2) {
           //assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.SMa))// This one fires now
           s1_nack := true //This must be the problem.  Somehow this s1_nack is causing problems.

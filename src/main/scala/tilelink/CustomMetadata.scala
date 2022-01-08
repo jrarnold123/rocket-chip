@@ -77,7 +77,7 @@ class CustomClientMetadata extends Bundle {
       I     -> (Bool(false), Bool(false)),
       ISd   -> (Bool(false), Bool(true)),
       IMad  -> (Bool(false), Bool(true)),
-      IMa   -> (Bool(false), Bool(true)),
+      //IMa   -> (Bool(false), Bool(true)),
       S     -> (Bool(true), Bool(false)),
       SMad  -> (Bool(true), Bool(false)),
       SMa   -> (Bool(true), Bool(false)),
@@ -97,7 +97,7 @@ class CustomClientMetadata extends Bundle {
       I     -> (Bool(false), Bool(false)),
       ISd   -> (Bool(false), Bool(true)),
       IMad  -> (Bool(false), Bool(true)),
-      IMa   -> (Bool(false), Bool(true)),
+      //IMa   -> (Bool(false), Bool(true)),
       S     -> (Bool(false), Bool(false)),
       SMad  -> (Bool(false), Bool(true)),
       SMa   -> (Bool(false), Bool(true)),
@@ -114,29 +114,14 @@ class CustomClientMetadata extends Bundle {
     import CustomClientStates._
     import CustomMemoryOpCategories._
     val c = categorize(cmd)
-    //val out = Wire(UInt())
 
-    /*when (c === rd) {
-      when (state === I) {
-        out := ISd
-      }
-    }.otherwise {
-      when (state === I) {
-        out := IMad
-      } .elsewhen (state === S) {
-        out := SMad
-      }
-    }*/
-
-    /*CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
+    CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
       Cat(rd, I)    -> ISd,
       Cat(wi, I)    -> IMad,
       Cat(wr, I)    -> IMad,
-      Cat(wi, S)    -> SMad,
-      Cat(wr, S)    -> SMad
-    )))*/
-    //CustomClientMetadata(out)
-    CustomClientMetadata(SMa);
+      Cat(wi, S)    -> SMa,
+      Cat(wr, S)    -> SMa
+    )))
   }
 
   def onHit(cmd: UInt): CustomClientMetadata = {
@@ -145,87 +130,9 @@ class CustomClientMetadata extends Bundle {
     val c = categorize(cmd)
 
     CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
-      Cat(wi, E)    -> M,
+      Cat(wi, E)    -> E,
       Cat(wr, E)    -> M
     )))
-  }
-
-  /** Determine whether this cmd misses, and the new state (on hit) or param to be sent (on miss) */
-  private def growStarter(cmd: UInt): (Bool, UInt) = {
-    import CustomMemoryOpCategories._
-    import TLPermissions._
-    import CustomClientStates._
-    val c = categorize(cmd)
-    MuxTLookup(Cat(c, state), (Bool(false), UInt(0)), Seq(
-        //(effect, am now) -> (was a hit,   next)
-        Cat(rd, M)   -> (Bool(true),  M),
-        Cat(rd, E)   -> (Bool(true),  E),
-        Cat(rd, S)  -> (Bool(true),  S),
-        Cat(wi, M)   -> (Bool(true),  M),
-        Cat(wi, E)   -> (Bool(true),  E),
-        Cat(wr, M)   -> (Bool(true),  M),
-        Cat(wr, E)   -> (Bool(true),  M),
-        //(effect, am now) -> (was a miss,  param)
-        Cat(rd, I) -> (Bool(false), NtoB),
-        Cat(wi, S)  -> (Bool(false), BtoT),
-        Cat(wi, I) -> (Bool(false), NtoT),
-        Cat(wr, S)  -> (Bool(false), BtoT),
-        Cat(wr, I) -> (Bool(false), NtoT)))
-  }
-
-  /** Determine what state to go to after miss based on Grant param
-    * For now, doesn't depend on state (which may have been Probed).
-    */
-  private def growFinisher(cmd: UInt, param: UInt): UInt = {
-    import CustomMemoryOpCategories._
-    import TLPermissions._
-    import CustomClientStates._
-    val c = categorize(cmd)
-    val next = Wire(UInt())
-    //assert(c === rd || param === toT, "Client was expecting trunk permissions.")
-
-    when (cmd === rd) {
-      when (param === toB) {
-        next := S
-      } .elsewhen (param === toT) {
-        next := E
-      }
-    } .elsewhen (cmd === wi) {
-      when (param === toT) {
-        next := E
-      }
-    } .elsewhen(cmd === wr) {
-      when (param === toT) {
-        next := M
-      }
-    }
-    next
-  }
-
-  private def growFinisher(param: UInt): UInt = {
-    import TLPermissions._
-    import CustomClientStates._
-    val nextState = Wire(UInt())
-    
-    when (param === toB) {
-      nextState := S
-    } .otherwise {
-      assert(!isCap(param) || param === toT)
-      nextState := E
-    }
-    /* .elsewhen (param === toT) { //jamesCurrTest
-      nextState := E
-    } .otherwise {
-      nextState := I
-    }*/
-    nextState
-  }
-
-  /** Does this cache have permissions on this block sufficient to perform op,
-    * and what to do next (Acquire message param or updated metadata). */
-  def onAccess(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
-    val r = growStarter(cmd)
-    (r._1, r._2, CustomClientMetadata(r._2))
   }
 
   def onWrite(): CustomClientMetadata = {
@@ -238,24 +145,40 @@ class CustomClientMetadata extends Bundle {
     temp
   }
 
-  /** Does a secondary miss on the block require another Acquire message */
-  def onSecondaryAccess(first_cmd: UInt, second_cmd: UInt): (Bool, Bool, UInt, CustomClientMetadata, UInt) = {
-    import CustomMemoryOpCategories._
-    val r1 = growStarter(first_cmd)
-    val r2 = growStarter(second_cmd)
-    val needs_second_acq = isWriteIntent(second_cmd) && !isWriteIntent(first_cmd)
-    val hit_again = r1._1 && r2._1
-    val dirties = categorize(second_cmd) === wr
-    val biggest_grow_param = Mux(dirties, r2._2, r1._2)
-    val dirtiest_state = CustomClientMetadata(biggest_grow_param)
-    val dirtiest_cmd = Mux(dirties, second_cmd, first_cmd)
-    (needs_second_acq, hit_again, biggest_grow_param, dirtiest_state, dirtiest_cmd)
+  /** Metadata change on a returned Grant */
+  def onGrant(param: UInt): CustomClientMetadata = {
+    import TLPermissions._
+    import CustomClientStates._
+    val nextState = Wire(UInt())
+    
+    when (param === toB) {
+      nextState := S
+    } .otherwise {
+      assert(!isCap(param) || param === toT)
+      nextState := E
+    }
+    CustomClientMetadata(nextState)
   }
 
-  /** Metadata change on a returned Grant */
-  def onGrant(cmd: UInt, param: UInt): CustomClientMetadata = CustomClientMetadata(growFinisher(cmd, param))
-  def onGrant(param: UInt): CustomClientMetadata = CustomClientMetadata(growFinisher(param))
-
+  def onProbe(param: UInt): (Bool, UInt, CustomClientMetadata) = {
+    import CustomClientStates._
+    import TLPermissions._
+    MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
+      //(param,state) ->      (dirty, param, next state)
+      Cat(toT, M)     ->      (Bool(true),  TtoT, CustomClientMetadata(E)),
+      Cat(toT, E)     ->      (Bool(false), TtoT, CustomClientMetadata(E)),
+      Cat(toT, S)     ->      (Bool(false), BtoB, CustomClientMetadata(S)),
+      Cat(toT, I)     ->      (Bool(false), NtoN, CustomClientMetadata(I)),
+      Cat(toB, M)     ->      (Bool(true),  TtoB, CustomClientMetadata(S)),
+      Cat(toB, E)     ->      (Bool(false), TtoB, CustomClientMetadata(S)),
+      Cat(toB, S)     ->      (Bool(false), BtoB, CustomClientMetadata(S)),
+      Cat(toB, I)     ->      (Bool(false), NtoN, CustomClientMetadata(I)),
+      Cat(toN, M)     ->      (Bool(true),  TtoN, CustomClientMetadata(I)),
+      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(I)),
+      Cat(toN, S)     ->      (Bool(false), BtoN, CustomClientMetadata(I)),
+      Cat(toN, I)     ->      (Bool(false), NtoN, CustomClientMetadata(I))))
+  }
+  
   /** Determine what state to go to based on Probe param */
   private def shrinkHelper(param: UInt): (Bool, UInt, UInt) = {
     import CustomClientStates._
@@ -332,19 +255,14 @@ class CustomClientMetadata extends Bundle {
   }
 
   def onCacheControl(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
-    val r = shrinkHelper(cmdToPermCap(cmd))
-    (r._1, r._2, CustomClientMetadata(r._3))
-  }
-
-  def onProbe(param: UInt): (Bool, UInt, CustomClientMetadata) = { 
-    val r = shrinkHelper(param)
-    (r._1, r._2, CustomClientMetadata(r._3))
+    val r = onProbe(cmdToPermCap(cmd))
+    (r._1, r._2, r._3)
   }
 
 }
   
 
-/** Factories for ClientMetadata, including on reset */
+/** Factories for CustomClientMetadata, including on reset */
 object CustomClientMetadata {
   def apply(perm: UInt) = {
     val meta = Wire(new CustomClientMetadata)
