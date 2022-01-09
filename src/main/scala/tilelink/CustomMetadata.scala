@@ -28,21 +28,26 @@ object CustomClientStates {
   def EIa = UInt(10, width)
   def SIa = UInt(11, width)
   def IIa = UInt(12, width)
-  
-
-  //def hasReadPermission(state: UInt): Bool = state > I
-  //def hasWritePermission(state: UInt): Bool = (state === CustomClientStates.E || state === CustomClientStates.M)
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
-  def wr = Cat(Bool(true), Bool(true))   // Op actually writes
-  def wi = Cat(Bool(false), Bool(true))  // Future op will write
-  def rd = Cat(Bool(false), Bool(false)) // Op only reads
+  def wr = 1.U   // Op actually writes
+  def wi = 2.U  // Future op will write
+  def rd = 3.U // Op only reads
 
   def categorize(cmd: UInt): UInt = {
-    val cat = Cat(isWrite(cmd), isWriteIntent(cmd))
-    //assert(cat.isOneOf(wr,wi,rd), "Could not categorize command.")
-    cat
+    val out = Wire(UInt())
+    when (isWrite(cmd)) {
+      out := wr
+    } .elsewhen (isWriteIntent(cmd)) {
+      out := wi
+    } .elsewhen (isRead(cmd)) {
+      out := rd
+    } .otherwise {
+      out := 0.U
+    }
+    assert(out.isOneOf(wr,wi,rd), "Could not categorize command.")
+    out
   }
 }
 
@@ -115,13 +120,34 @@ class CustomClientMetadata extends Bundle {
     import CustomMemoryOpCategories._
     val c = categorize(cmd)
 
-    CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
+    val out = Wire(UInt())
+
+    when (state === I) {
+      when(c === rd) {
+        out := ISd
+        assert(c =/= wi && c =/= wr)
+      } .elsewhen (c === wi || c === wr) {
+        out := IMad
+      } . otherwise {
+        out := state
+      }
+    } .elsewhen (state === S) {
+      when (c === wi || c === wr) {
+        out := SMa
+      } .otherwise {
+        out := state
+      }
+    }
+
+    /*val out = MuxLookup(Cat(c, state), UInt(0), Seq(
       Cat(rd, I)    -> ISd,
       Cat(wi, I)    -> IMad,
       Cat(wr, I)    -> IMad,
       Cat(wi, S)    -> SMa,
       Cat(wr, S)    -> SMa
-    )))
+    ))*/
+    
+    CustomClientMetadata(out)
   }
 
   def onHit(cmd: UInt): CustomClientMetadata = {
@@ -177,71 +203,6 @@ class CustomClientMetadata extends Bundle {
       Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(I)),
       Cat(toN, S)     ->      (Bool(false), BtoN, CustomClientMetadata(I)),
       Cat(toN, I)     ->      (Bool(false), NtoN, CustomClientMetadata(I))))
-  }
-  
-  /** Determine what state to go to based on Probe param */
-  private def shrinkHelper(param: UInt): (Bool, UInt, UInt) = {
-    import CustomClientStates._
-    import TLPermissions._
-    val dirty_data = Wire(Bool(false))
-    val ack_param = Wire(UInt())
-    val new_state = Wire(UInt())
-    when (param ===  toT) {
-      when (state === M) {
-        dirty_data := Bool(true)
-        ack_param := TtoT
-        new_state := E
-      } .elsewhen (state === E) {
-        dirty_data := Bool(false)
-        ack_param := TtoT
-        new_state := E
-      } .elsewhen (state === S) {
-        dirty_data := Bool(false)
-        ack_param := BtoB
-        new_state := S
-      } .elsewhen (state === I) {
-        dirty_data := Bool(false)
-        ack_param := NtoN
-        new_state := I
-      }
-    } .elsewhen (param === toB) {
-      when (state === M) {
-        dirty_data := Bool(true)
-        ack_param := TtoB
-        new_state := S
-      } .elsewhen (state === E) {
-        dirty_data := Bool(false)
-        ack_param := TtoB
-        new_state := S
-      } .elsewhen (state === S) {
-        dirty_data := Bool(false)
-        ack_param := BtoB
-        new_state := S
-      } .elsewhen (state === I) {
-        dirty_data := Bool(false)
-        ack_param := NtoN
-        new_state := I
-      }
-    } .elsewhen (param === toN) {
-      when (state === M) {
-        dirty_data := Bool(true)
-        ack_param := TtoN
-        new_state := I
-      } .elsewhen (state === E) {
-        dirty_data := Bool(false)
-        ack_param := TtoN
-        new_state := I
-      } .elsewhen (state === S) {
-        dirty_data := Bool(false)
-        ack_param := BtoN
-        new_state := I
-      } .elsewhen (state === I) {
-        dirty_data := Bool(false)
-        ack_param := NtoN
-        new_state := I
-      }
-    } 
-    (dirty_data, ack_param, new_state)
   }
 
   /** Translate cache control cmds into Probe param */
