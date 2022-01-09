@@ -293,24 +293,24 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         val s1_meta_decoded_inner = s1_meta.map(tECC.decode(_))
         (s1_meta_hit_way, s1_meta_hit_state, s1_meta)
       }
-    val s2_probe_stall = Wire(Bool()) //jamesTestLater
+    val s2_probe_stall = Wire(Bool()) //jamesToDo
     val s2_probe_stall_latch = Reg(next=s2_probe_stall,init=Bool(false))
     val s1_probe = RegEnable(next=tl_out.b.fire(), init=Bool(false), !s2_probe_stall && !s2_probe_stall_latch)
     val s2_probe_way = RegEnable(s1_hit_way, s1_probe && !s2_probe_stall_latch)
     val s2_probe_state = RegEnable(s1_hit_state, init=CustomClientMetadata(CustomClientStates.I), s1_probe && !s2_probe_stall_latch) //jamesToDid: adding an initial state
-    assert(!s1_probe || s1_hit_state =/= CustomClientMetadata(CustomClientStates.SMa))
+    assert(!s1_probe || s1_hit_state =/= CustomClientMetadata(CustomClientStates.SM))
     when (s1_probe && !s2_probe_stall_latch) {
       s2_probe_stall := !s1_hit_state.isStable()
     } .elsewhen (s2_probe_stall_latch) {
       assert(Bool(false)) //please don't let this work
-      assert(s2_probe_state === CustomClientMetadata(CustomClientStates.SMa))
+      assert(s2_probe_state === CustomClientMetadata(CustomClientStates.SM))
       s2_probe_stall := !s2_probe_state.isStable()
     } .otherwise {
       s2_probe_stall := Bool(false)
     }
     assert(!s2_probe_stall)
     assert(!s2_probe_stall_latch)
-    assert(!s1_probe || s1_hit_state =/= CustomClientMetadata(CustomClientStates.SMa))
+    assert(!s1_probe || s1_hit_state =/= CustomClientMetadata(CustomClientStates.SM))
 
 
     val s1_data_way = Wire(init = if (nWays == 1) 1.U else Mux(inWriteback, releaseWay, s1_hit_way))
@@ -423,14 +423,14 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_victim_or_hit_way = Mux(s2_hit_valid, s2_hit_way, s2_victim_way)
     val s2_victim_tag = Mux(s2_valid_data_error || s2_valid_flush_line, s2_req.addr(paddrBits-1, tagLSB), Mux1H(s2_victim_way, s2_meta_corrected).tag)
     val s2_victim_state = Mux(s2_hit_valid, s2_hit_state, Mux1H(s2_victim_way, s2_meta_corrected).coh)
-    //assert(s2_victim_state === CustomClientMetadata(CustomClientStates.SMa) && s2_want_victimize) 
+    //assert(s2_victim_state === CustomClientMetadata(CustomClientStates.SM) && s2_want_victimize) 
     val s2_cannot_victimize = io.cpu.s2_kill //|| (!s2_victim_state.isStable()) //JamesToDo: never evicts transient states
     val s2_victimize = s2_want_victimize && !s2_cannot_victimize
-    /*when (!s2_victim_state.isStable() && s2_want_victimize) { //jamesTestLater
+    /*when (!s2_victim_state.isStable() && s2_want_victimize) { //jamesTodo
       s1_nack := true
     }*/
 
-    assert(s2_probe_state =/= CustomClientMetadata(CustomClientStates.ISd))
+    assert(s2_probe_state =/= CustomClientMetadata(CustomClientStates.IS))
     val (s2_prb_ack_data, s2_report_param, probeNewCoh)= s2_probe_state.onProbe(probe_bits.param) 
     val (s2_victim_dirty, s2_shrink_param, voluntaryNewCoh) = s2_victim_state.onCacheControl(M_FLUSH)
     dontTouch(s2_victim_dirty)
@@ -680,9 +680,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val block_probe_for_ordering = releaseInFlight || block_probe_for_pending_release_ack || grantInProgress || s2_probe_stall
 
     //block b messages if we're still waiting for one to be handled, block_probe cases, or if we already have something in s1 or s2
-    tl_out.b.ready := metaArb.io.in(6).ready && !(block_probe_for_core_progress || block_probe_for_ordering || s1_valid || s2_valid || s1_probe) //jamesTestLater: added s1_probe
+    tl_out.b.ready := metaArb.io.in(6).ready && !(block_probe_for_core_progress || block_probe_for_ordering || s1_valid || s2_valid || s1_probe) //jamesTodo: need to test the addition of s1_probe
 
-    // replacement policy... voodoo... I don't even know which if case get's used but I'm pretty sure it's the else case
+    // replacement policy... voodoo... I don't even know which if case gets used but I'm pretty sure it's the else case
     s1_victim_way := (if (replacer.perSet && nWays > 1) {
       val repl_array = Mem(nSets, UInt(replacer.nBits.W))
       val s1_repl_idx = s1_req.addr(idxBits+blockOffBits-1, blockOffBits)
@@ -1090,16 +1090,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       tl_out_e.bits := messageToSend
     }
 
-    assert(s2_new_hit_state =/= CustomClientMetadata(CustomClientStates.ISd) || s2_req.addr =/= 256)
+    assert(s2_new_hit_state.isStable() || s2_req.addr =/= 256) //known uncached address that shows up in code
 
     def newFSM() = {
-      assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.IMad))
       tl_out_e.valid := false //update to false each cycle, then assign true where necessary (in sendEMessage)
       s2_hit := io.cpu.req.valid && !io.cpu.s2_kill || ((CPURead || (!io.cpu.req.valid)) && s2_hit_state.isValid()) //easier to hard-code this like this than within the FSM since it's not in ProtoGen's logic
 
       //Eviction
       when (s2_victimize) { //evicting someone as a result of a cache miss (or error or flush)
-        assert(s2_victim_state =/= CustomClientMetadata(CustomClientStates.ISd)) //Never tries to victimize this state
+        assert(s2_victim_state.isStable())
         assert(s2_valid_flush_line || io.cpu.s2_nack) //assertion was here before me... 
         val discard_line = s2_valid_flush_line && s2_req.size(1) //temp variable... unsure of exact purpose but necessary
 
@@ -1115,25 +1114,27 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
       //D Channel Inputs
       when (grantIsCached && tl_out.d.valid) { //grant providing write permission
+        //assert(!s2_hit_state.isStable()) Although the metadata will hold that value, grants don't trigger a metadata read
         sendEMessage(grantAck, d_first) //send a grantAck on the first cycle of the message
         writeMetaGrant(s2_hit_state.onGrant(tl_out.d.bits.param)) //update metadata to E state
-        assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.ISd)) //never receives a grant for Write permissions... deadlock happens first
         writeDataGrant() //update data with new data
       }
       when (releaseAck) {
-        assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.ISd)) //This wouldn't really make a difference, but ISd never receives a release ack (it shouldn't)
+        assert(s2_hit_state.isStable())
         //JamesToDo: this will become a state transition
         release_ack_wait := false //stop blocking transactions now that the Release is confirmed/finalized
       }
 
       //B Channel Inputs
       when (s2_probe) { //when probeBlock reaches s2
-        assert(s2_probe_state =/= CustomClientMetadata(CustomClientStates.ISd)) //no probes arrive in ISd
-        s1_nack := true //nacks the instruction to buy more time if we need to writeback
+        assert(s2_probe_state.isStable())
+        s1_nack := true //nacks the instruction to buy more time if we need to writeback, this is undone later in code when applicable
         when (s2_prb_ack_data) { // jamesToDo: make isDirty
+          assert(s2_probe_state.isDirty())
           sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid)) //M will conflict with any probe and needs to be written back
           release_state := s_probe_rep_dirty //this allows FSM to continue writing a multi-cycle message
         } .elsewhen (s2_probe_state.isValid()) { //jamesToDo: I think this is correct for stable states too, but not sure
+          assert(!s2_probe_state.isDirty())
           sendCMessage(cleanProbeAckMessage, true.B) //E and S have no data to be written back, unclear whether metadata needs to be modified yet
           release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean) //finish sending the reply and then change to s_probe_write_meta to determine what metadata changes need to occur
         } .elsewhen (!s2_probe_state.isValid()) { //redundant if statement... could be else
@@ -1145,19 +1146,19 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
       //CPU Inputs
       when (CPURead && !s2_uncached) {
-        assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.ISd))
+        assert(!isWrite(s2_req.cmd) && !isWriteIntent(s2_req.cmd)) //sanity check
+        assert(s2_hit_state.isStable()) //not incorrect, but shouldn't happen on in-order processor
         when (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
+          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           when (!cached_grant_wait) { //jamesToDo: is this if necessary?
-            assert(!isWrite(s2_req.cmd) && !isWriteIntent(s2_req.cmd))
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //jamesToDo what about MI protocol?
-            s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd) //ISd
-            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.ISd))
-            assert(s2_new_hit_state =/= CustomClientMetadata(CustomClientStates.SMad))
+            s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
+            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
           } .otherwise {
             s1_nack := true
           }
         } .elsewhen (s2_hit_state.hasReadPermission()._2) {
-          s1_nack := true //jamesToDid
+          s1_nack := true
         }.otherwise {
           //jamesToDo: should have option to update state
           //jamesToDo: notifyL2?
@@ -1165,43 +1166,48 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       }
 
       when (CPUWrite && !s2_uncached) {
-        assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.ISd))
+        assert(s2_hit_state.isStable())
         when (!s2_hit_state.isValid()) {
+          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
+          assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         } .elsewhen (s2_hit_state.hasWritePermission()._2) {
-          s1_nack := true //This must be the problem.  Somehow this s1_nack is causing problems.
+          s1_nack := true 
         } .elsewhen (!s2_hit_state.hasWritePermission()._1) { //is valid but doesn't have permissions
-          assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.SMa)) //never fires, as expected
-          assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.IMad))
-          when (s2_hit_state.hasReadPermission()._1) { //jamesToDo: this is temporary and will be in CustomMetadata later
-            s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd) //SMad
+          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.S))
+          when (s2_hit_state.hasReadPermission()._1) { //jamesToDo: remove this
+            assert(s2_hit_state === CustomClientMetadata(CustomClientStates.S))
+            s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd) //SM
             sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss)
-            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SMa))
+            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
           } .otherwise {
+            //jamesToDo: verify that this doesn't happen
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
           }
           
         } .otherwise {  //already has permissions, update state if necessary
           //jamesToDo: what about hitting on O?  notifyL2
           assert(s2_hit_state === CustomClientMetadata(CustomClientStates.M) || s2_hit_state === CustomClientMetadata(CustomClientStates.E))
-          assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.SMa))
           s2_new_hit_state := s2_hit_state.onWrite()
           assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.M))
-          writeMetaHit(s2_new_hit_state)
+          writeMetaHit(s2_new_hit_state) //jamesToDo: remove this line, it's unnecessary (I hope?)
         }
       } .elsewhen (CPUWriteIntent && !s2_uncached) { //prefetching write permissions early
-        assert(s2_hit_state =/= CustomClientMetadata(CustomClientStates.ISd))
+        assert(s2_hit_state.isStable())
         when (!s2_hit_state.isValid()) {
+          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss I->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
-          //jamesToDo: Update State
+          assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         }.elsewhen (s2_hit_state.hasWritePermission()._2) {
-          s1_nack := true //jamesToDid
+          s1_nack := true
+          //jamesToDo: verify that this doesn't happen
         }.elsewhen (!s2_hit_state.hasWritePermission()._1) {
-          //jamesToDo: Update State
+          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.S))
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
+          assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
         }
       }
 
@@ -1291,7 +1297,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       val way = Wire(Bits(width = nWays))
       way := s2_victim_or_hit_way //jamesToDo: is this ok?
       val index = s2_vaddr(idxMSB, idxLSB)
-      val addr = Cat(io.cpu.req.bits.addr >> untagBits, s2_vaddr(idxMSB, 0)) //JAMESTOTEST: USE s2_req.addr
+      val addr = Cat(io.cpu.req.bits.addr >> untagBits, s2_vaddr(idxMSB, 0)) //JAMESTODO: USE s2_req.addr
       assert(newState =/= CustomClientMetadata(CustomClientStates.I))
       val data = tECC.encode(CustomL1Metadata(s2_req.addr >> tagLSB, newState).asUInt)
       val wmask = if (nWays == 1) Seq(true.B) else way.asBools

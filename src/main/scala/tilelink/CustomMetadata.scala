@@ -8,26 +8,18 @@ import freechips.rocketchip.rocket.constants.MemoryOpConstants
 import freechips.rocketchip.util._
 
 object CustomClientStates {
-  /*val width = 2
-  def I = UInt(0, width)
-  def S  = UInt(1, width)
-  def E   = UInt(2, width)
-  def M   = UInt(3, width)
-  */
   val width = 4
   def I = UInt(0, width)
-  def ISd = UInt(1, width)
-  def IMad = UInt(2, width)
-  def IMa = UInt(3, width)
-  def S = UInt(4, width)
-  def SMad = UInt(5, width)
-  def SMa = UInt(6, width)
-  def E = UInt(7, width)
-  def M = UInt(8, width)
-  def MIa = UInt(9, width)
-  def EIa = UInt(10, width)
-  def SIa = UInt(11, width)
-  def IIa = UInt(12, width)
+  def IS = UInt(1, width) //better name would be ISad to match convention... but I will probably change all of them later
+  def IM = UInt(2, width)
+  def S = UInt(3, width)
+  def SM = UInt(4, width)
+  def E = UInt(5, width)
+  def M = UInt(6, width)
+  def MI = UInt(7, width) //not implemented yet
+  def EI = UInt(8, width) //not implemented yet
+  def SI = UInt(9, width) //not implemented yet
+  def II = UInt(10, width) //not implemented yet
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
@@ -36,6 +28,7 @@ object CustomMemoryOpCategories extends MemoryOpConstants {
   def rd = 3.U // Op only reads
 
   def categorize(cmd: UInt): UInt = {
+    //had to change this around... Operations that aren't wr or wi should NOT be classified rd
     val out = Wire(UInt())
     when (isWrite(cmd)) {
       out := wr
@@ -66,52 +59,47 @@ class CustomClientMetadata extends Bundle {
   def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
 
   /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I && state <= CustomClientStates.IIa
+  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I && state <= CustomClientStates.II
 
   def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
 
   def isDirty(): Bool = {
-    (state === CustomClientStates.M || state === CustomClientStates.MIa)
+    (state === CustomClientStates.M || state === CustomClientStates.MI)
   }
 
   def hasReadPermission(): (Bool, Bool) = {
     import CustomClientStates._
     MuxTLookup(state, (Bool(false),Bool(true)), Seq( //JamesToDo: consider changing default to false false?
-    //jamesToDo: currently the stall is unused
-                                  //canRead     //mustStall
+              //canRead     //mustStall
       I     -> (Bool(false), Bool(false)),
-      ISd   -> (Bool(false), Bool(true)),
-      IMad  -> (Bool(false), Bool(true)),
-      //IMa   -> (Bool(false), Bool(true)),
+      IS    -> (Bool(false), Bool(true)),
+      IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(true), Bool(false)),
-      SMad  -> (Bool(true), Bool(false)),
-      SMa   -> (Bool(true), Bool(false)),
+      SM    -> (Bool(true), Bool(false)),
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
-      MIa   -> (Bool(false), Bool(true)),
-      EIa   -> (Bool(false), Bool(true)),
-      SIa   -> (Bool(false), Bool(true)),
-      IIa   -> (Bool(false), Bool(true))
+      MI    -> (Bool(false), Bool(true)),
+      EI    -> (Bool(false), Bool(true)),
+      SI    -> (Bool(false), Bool(true)),
+      II    -> (Bool(false), Bool(true))
     ))
   }
 
   def hasWritePermission(): (Bool, Bool) = {
     import CustomClientStates._
     MuxTLookup(state, (Bool(false), Bool(true)), Seq(
-                                  //canWrite    //mustStall
+              //canWrite    //mustStall
       I     -> (Bool(false), Bool(false)),
-      ISd   -> (Bool(false), Bool(true)),
-      IMad  -> (Bool(false), Bool(true)),
-      //IMa   -> (Bool(false), Bool(true)),
+      IS    -> (Bool(false), Bool(true)),
+      IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(false), Bool(false)),
-      SMad  -> (Bool(false), Bool(true)),
-      SMa   -> (Bool(false), Bool(true)),
+      SM    -> (Bool(false), Bool(true)),
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
-      MIa   -> (Bool(false), Bool(true)),
-      EIa   -> (Bool(false), Bool(true)),
-      SIa   -> (Bool(false), Bool(true)),
-      IIa   -> (Bool(false), Bool(true))
+      MI    -> (Bool(false), Bool(true)),
+      EI    -> (Bool(false), Bool(true)),
+      SI    -> (Bool(false), Bool(true)),
+      II    -> (Bool(false), Bool(true))
     ))
   }
 
@@ -122,29 +110,33 @@ class CustomClientMetadata extends Bundle {
 
     val out = Wire(UInt())
 
+
+    /**not sure why the MuxLookup doesn't work here.
+    I remember having trouble with that in the past too
+    JamesToDo: try using a MuxTLookup with a dummy UInt(0) as second val**/
     when (state === I) {
       when(c === rd) {
-        out := ISd
+        out := IS
         assert(c =/= wi && c =/= wr)
       } .elsewhen (c === wi || c === wr) {
-        out := IMad
+        out := IM
       } . otherwise {
         out := state
       }
     } .elsewhen (state === S) {
       when (c === wi || c === wr) {
-        out := SMa
+        out := SM
       } .otherwise {
         out := state
       }
     }
 
     /*val out = MuxLookup(Cat(c, state), UInt(0), Seq(
-      Cat(rd, I)    -> ISd,
-      Cat(wi, I)    -> IMad,
-      Cat(wr, I)    -> IMad,
-      Cat(wi, S)    -> SMa,
-      Cat(wr, S)    -> SMa
+      Cat(rd, I)    -> IS,
+      Cat(wi, I)    -> IM,
+      Cat(wr, I)    -> IM,
+      Cat(wi, S)    -> SM,
+      Cat(wr, S)    -> SM
     ))*/
     
     CustomClientMetadata(out)
