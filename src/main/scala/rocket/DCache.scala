@@ -331,7 +331,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_valid_masked = s2_valid_no_xcpt && s2_not_nacked_in_s1
     val s2_valid_not_killed = s2_valid_masked && !io.cpu.s2_kill
     val s2_req = Reg(io.cpu.req.bits)
-    val s2_req_valid = Reg(io.cpu.req.valid)
+    val s2_req_valid = Reg(Bool(false))//Reg(io.cpu.req.valid) jamesToDid //seemed to pass just fine?
     val s2_cmd_flush_all = s2_req.cmd === M_FLUSH_ALL && !s2_req.size(0)
     val s2_cmd_flush_line = s2_req.cmd === M_FLUSH_ALL && s2_req.size(0)
     val s2_tlb_xcpt = Reg(tlb.io.resp.cloneType)
@@ -1145,28 +1145,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       } 
 
       //CPU Inputs
-      when (CPURead && !s2_uncached) {
-        assert(!isWrite(s2_req.cmd) && !isWriteIntent(s2_req.cmd)) //sanity check
-        assert(s2_hit_state.isStable()) //not incorrect, but shouldn't happen on in-order processor
-        when (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
-          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
-          when (!cached_grant_wait) { //jamesToDo: is this if necessary?
-            sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //jamesToDo what about MI protocol?
-            s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
-            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
-          } .otherwise {
-            s1_nack := true
-          }
-        } .elsewhen (s2_hit_state.hasReadPermission()._2) {
-          s1_nack := true
-        }.otherwise {
-          //jamesToDo: should have option to update state
-          //jamesToDo: notifyL2?
-        }
-      }
-
       when (CPUWrite && !s2_uncached) {
-        assert(s2_hit_state.isStable())
+        assert(s2_hit_state.isStable()) //shouldn't happen on in-order, but rv64ua-p-lrsc fails this
         when (!s2_hit_state.isValid()) {
           assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
@@ -1208,6 +1188,27 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
           assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
+        } .otherwise {
+          s2_new_hit_state := s2_hit_state
+        }
+      } .elsewhen (CPURead && !s2_uncached) {
+        assert(!isWrite(s2_req.cmd) && !isWriteIntent(s2_req.cmd))
+        assert(s2_hit_state.isStable()) //not incorrect, but shouldn't happen on in-order processor
+        when (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
+          assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
+          when (!cached_grant_wait) { //jamesToDo: is this if necessary?
+            sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //jamesToDo what about MI protocol?
+            s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)
+            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
+          } .otherwise {
+            s1_nack := true
+          }
+        } .elsewhen (s2_hit_state.hasReadPermission()._2) {
+          s1_nack := true
+        }.otherwise {
+          s2_new_hit_state := s2_hit_state //JamesCurrTest
+          //jamesToDo: should have option to update state
+          //jamesToDo: notifyL2?
         }
       }
 

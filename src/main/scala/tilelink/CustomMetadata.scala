@@ -114,12 +114,13 @@ class CustomClientMetadata extends Bundle {
     /**not sure why the MuxLookup doesn't work here.
     I remember having trouble with that in the past too
     JamesToDo: try using a MuxTLookup with a dummy UInt(0) as second val**/
+    //NOTE: THE WRITES MUST BE CHECKED BEFORE READS
     when (state === I) {
-      when(c === rd) {
+      when (c === wi || c === wr) {
+        out := IM
+      } .elsewhen(c === rd) {
         out := IS
         assert(c =/= wi && c =/= wr)
-      } .elsewhen (c === wi || c === wr) {
-        out := IM
       } . otherwise {
         out := state
       }
