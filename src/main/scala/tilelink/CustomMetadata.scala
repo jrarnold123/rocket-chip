@@ -10,7 +10,7 @@ import freechips.rocketchip.util._
 object CustomClientStates {
   val width = 4
   def I = UInt(0, width)
-  def IS = UInt(1, width) //better name would be ISad to match convention... but I will probably change all of them later
+  def IS = UInt(1, width)
   def IM = UInt(2, width)
   def S = UInt(3, width)
   def SM = UInt(4, width)
@@ -209,8 +209,22 @@ class CustomClientMetadata extends Bundle {
   }
 
   def onCacheControl(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
-    val r = onProbe(cmdToPermCap(cmd))
-    (r._1, r._2, r._3)
+    /*val r = onProbe(cmdToPermCap(cmd))
+    (r._1, r._2, r._3)*/
+    import CustomClientStates._
+    import TLPermissions._
+    val param = cmdToPermCap(cmd)
+    assert(param === toN)
+    MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
+      //(param,state) ->      (dirty, param, next state)
+      //JamesToDo: CHANGE TO MI MI SI
+      //works with IM IM IM for some reason (I made a typo and it passed)
+      //Gibberish (but passes) with IM IM IS
+      //MI MI MI gives gibberish
+      //Now testing I I I to make "good-output" wavetrace
+      Cat(toN, M)     ->      (Bool(true),  TtoN, CustomClientMetadata(MI)),
+      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(MI)),
+      Cat(toN, S)     ->      (Bool(false), BtoN, CustomClientMetadata(SI))))
   }
 
 }

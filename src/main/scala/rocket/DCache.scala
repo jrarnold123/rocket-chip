@@ -207,7 +207,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s1_flush_valid = Reg(Bool())
     val s1_waw_hazard = Wire(Bool())
 
-    val s_ready :: s_voluntary_writeback :: s_probe_rep_dirty :: s_probe_rep_clean :: s_probe_retry :: s_probe_rep_miss :: s_voluntary_write_meta :: s_probe_write_meta :: s_dummy :: s_voluntary_release :: Nil = Enum(UInt(), 10)
+    val s_ready :: s_voluntary_writeback :: s_probe_rep_dirty :: s_probe_rep_clean :: s_probe_retry :: s_probe_rep_miss :: s_voluntary_write_meta :: s_probe_write_meta :: s_dummy :: s_voluntary_release :: s_voluntary_ack_write_meta :: Nil = Enum(UInt(), 11)
     val supports_flush = outer.flushOnFenceI || coreParams.haveCFlush
     val flushed = Reg(init=Bool(true))
     val flushing = Reg(init=Bool(false))
@@ -331,7 +331,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_valid_masked = s2_valid_no_xcpt && s2_not_nacked_in_s1
     val s2_valid_not_killed = s2_valid_masked && !io.cpu.s2_kill
     val s2_req = Reg(io.cpu.req.bits)
-    val s2_req_valid = Reg(Bool(false))//Reg(io.cpu.req.valid) jamesToDid //seemed to pass just fine?
+    val s2_req_valid = Reg(io.cpu.req.valid) //jamesToDid //seemed to pass just fine? //jamescurrtest changed to wire type
     val s2_cmd_flush_all = s2_req.cmd === M_FLUSH_ALL && !s2_req.size(0)
     val s2_cmd_flush_line = s2_req.cmd === M_FLUSH_ALL && s2_req.size(0)
     val s2_tlb_xcpt = Reg(tlb.io.resp.cloneType)
@@ -343,6 +343,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       s2_req.addr := s1_paddr
       s2_tlb_xcpt := tlb.io.resp
       s2_pma := Mux(s1_tlb_req_valid, pma_checker.io.resp, tlb.io.resp)
+    } .otherwise {
+      s2_req_valid := Bool(false) //apparently the initilization doesn't work //jamesCurrTest... gives gibberish runtimes but seems to pass?
     }
     val s2_vaddr = Cat(RegEnable(s1_vaddr, s1_valid_not_nacked) >> tagLSB, s2_req.addr(tagLSB-1, 0))
     val s2_read = isRead(s2_req.cmd)
@@ -423,12 +425,11 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_victim_or_hit_way = Mux(s2_hit_valid, s2_hit_way, s2_victim_way)
     val s2_victim_tag = Mux(s2_valid_data_error || s2_valid_flush_line, s2_req.addr(paddrBits-1, tagLSB), Mux1H(s2_victim_way, s2_meta_corrected).tag)
     val s2_victim_state = Mux(s2_hit_valid, s2_hit_state, Mux1H(s2_victim_way, s2_meta_corrected).coh)
-    //assert(s2_victim_state === CustomClientMetadata(CustomClientStates.SM) && s2_want_victimize) 
-    val s2_cannot_victimize = io.cpu.s2_kill //|| (!s2_victim_state.isStable()) //JamesToDo: never evicts transient states
+    val s2_cannot_victimize = io.cpu.s2_kill || (!s2_victim_state.isStable()) //JamesToDo: never evicts transient states
     val s2_victimize = s2_want_victimize && !s2_cannot_victimize
-    /*when (!s2_victim_state.isStable() && s2_want_victimize) { //jamesTodo
+    when (!s2_victim_state.isStable() && s2_want_victimize) { //jamesCurrTest
       s1_nack := true
-    }*/
+    }
 
     assert(s2_probe_state =/= CustomClientMetadata(CustomClientStates.IS))
     val (s2_prb_ack_data, s2_report_param, probeNewCoh)= s2_probe_state.onProbe(probe_bits.param) 
@@ -437,8 +438,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s2_update_meta = s2_hit_state =/= s2_new_hit_state
     val s2_dont_nack_uncached = s2_valid_uncached_pending && tl_out_a.ready
     val s2_dont_nack_misc = s2_valid_masked && !s2_meta_error && s2_req.cmd === M_WOK
-    io.cpu.s2_nack := s2_valid_no_xcpt && !s2_dont_nack_uncached && !s2_dont_nack_misc && !s2_valid_hit
-    when (io.cpu.s2_nack || (s2_valid_hit_pre_data_ecc_and_waw && s2_update_meta)) { s1_nack := true } //jamesToDo: check if we need the second condition after the || since it causes an extra nack in the new version
+    io.cpu.s2_nack := s2_valid_no_xcpt && !s2_dont_nack_uncached && !s2_dont_nack_misc && !s2_valid_hit //jamesNextTest: consider adding the "victim is unstable" case here instead of doing an s1_nack
+    when (io.cpu.s2_nack || (s2_valid_hit_pre_data_ecc_and_waw && s2_update_meta)) { s1_nack := true } //if something was nacked in the s2, or if there is something being updated in metadata then we need to nack s1 to make time
 
     // tag updates on ECC errors
     val s2_first_meta_corrected = PriorityMux(s2_meta_correctable_errors, s2_meta_corrected)
@@ -611,7 +612,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val grantInProgress = Reg(init=Bool(false))
     val blockProbeAfterGrantCount = Reg(init=UInt(0))
     when (blockProbeAfterGrantCount > 0) { blockProbeAfterGrantCount := blockProbeAfterGrantCount - 1 }
-    val canAcceptCachedGrant = !release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)
+    val canAcceptCachedGrant = !release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release, s_voluntary_ack_write_meta)
     tl_out.d.ready := Mux(grantIsCached, (!d_first || tl_out.e.ready) && canAcceptCachedGrant, true.B) //always ready for ReleaseAck, new grants are only accepted when e is ready and not evicting
     val uncachedRespIdxOH = UIntToOH(tl_out.d.bits.source, maxUncachedInFlight+mmioOffset) >> mmioOffset
     uncachedResp := Mux1H(uncachedRespIdxOH, uncachedReqs)
@@ -757,9 +758,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         } .elsewhen (release_state.isOneOf(s_probe_rep_clean, s_probe_rep_dirty)) {
           release_state := s_probe_write_meta
         } .elsewhen (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) {
-          release_state := s_voluntary_write_meta
+          when (!releaseAck) {
+            release_state := s_voluntary_write_meta
+          } .otherwise {
+            release_state := s_voluntary_ack_write_meta //jamesCurrTest
+          }
         }
+        assert(release_state =/= s_voluntary_ack_write_meta)
       }
+
     }
 
     // Drive APROT Bits (A channel)
@@ -811,7 +818,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     writeMetaRelease()
     when (metaArb.io.in(4).fire()) { release_state := s_ready }
-    //when (release_state.isOneOf(s_voluntary_write_meta, s_probe_write_meta)) { release_state := s_ready }
+    //when (release_state.isOneOf(s_voluntary_write_meta, s_probe_write_meta, s_voluntary_ack_write_meta)) { release_state := s_ready }
 
     // cached response
     //jamesTODO: THIS IS WHERE WE RESPOND TO CPU
@@ -1054,14 +1061,18 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     def probeFSM() = { //this handles the secondary states and/or multi-cycle states in the probeFSM (primary states assigned in newFSM)
        when (release_state === s_probe_rep_dirty) { //writeback dirty data upon Probe, could be multicycle
         sendCMessage(dirtyProbeAckMessage, s2_release_data_valid)
-      } .elsewhen (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release)) { // voluntary eviction
+      } .elsewhen (release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release, s_voluntary_ack_write_meta)) { // voluntary eviction
         when (release_state === s_voluntary_release) { //no data is needed... could probably handle this in a single cycle so it might need to be here
           sendCMessage(releaseMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }.otherwise { // writing back data upon voluntary eviction, could be multicycle
           sendCMessage(releaseDataMessage, (s2_release_data_valid || (!cacheParams.silentDrop && release_state === s_voluntary_release)) && !(c_first && release_ack_wait))
         }
 
-        newCoh := voluntaryNewCoh //update metadata as a result of voluntary release
+        when (release_state === s_voluntary_ack_write_meta) {
+          newCoh := CustomClientMetadata(CustomClientStates.I)
+        } .otherwise {
+          newCoh := voluntaryNewCoh //update metadata as a result of voluntary release
+        }
         releaseWay := s2_victim_or_hit_way //keep track of the way referenced in the release
         when (tl_out_c.fire() && c_first) {
           release_ack_wait := true // system must stall until releaseAck is received (starting as soon as release is sent)
@@ -1071,7 +1082,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     }
     
     def isAValidUncached() = { //moved logic out of uncachedFSM... basically just the valid condition for A messages
-      !io.cpu.s2_kill && (s2_valid_uncached_pending || (s2_valid_cached_miss && !s2_victim_dirty)) //jamesNextText: can remove the valid_cached_miss bit
+      !io.cpu.s2_kill && (s2_valid_uncached_pending || (s2_valid_cached_miss && !s2_victim_dirty)) //jamesToDo: can remove the valid_cached_miss bit
     }
 
     def sendAMessage(messageToSend: TLBundleA, valid: Bool) = { //sends a message along the A channel
@@ -1107,7 +1118,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         } .elsewhen (!cacheParams.silentDrop && !release_ack_wait && release_queue_empty && s2_victim_state.isValid() && (s2_valid_flush_line || s2_readwrite && !s2_hit_valid)) {
           release_state := s_voluntary_release //if it's not dirty and we can't silentDrop then we send Release to L2
         } .otherwise {
-          release_state := s_voluntary_write_meta //otherwise we just update the metadata to reflect the eviction
+          //release_state := s_voluntary_write_meta
+          release_state := s_voluntary_ack_write_meta //otherwise we just update the metadata to reflect the eviction //jamesCurrTest
         }
         probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB) //update probe_bits with new eviction info
       }
@@ -1120,7 +1132,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         writeDataGrant() //update data with new data
       }
       when (releaseAck) {
-        assert(s2_hit_state.isStable())
+        //jamesCurrTest: here down
+        release_state := s_voluntary_ack_write_meta
+        //may need to check if probe bits and stuff have changed to new ways, etc
         //JamesToDo: this will become a state transition
         release_ack_wait := false //stop blocking transactions now that the Release is confirmed/finalized
       }
@@ -1146,7 +1160,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
       //CPU Inputs
       when (CPUWrite && !s2_uncached) {
-        assert(s2_hit_state.isStable()) //shouldn't happen on in-order, but rv64ua-p-lrsc fails this
         when (!s2_hit_state.isValid()) {
           assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
@@ -1174,7 +1187,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           writeMetaHit(s2_new_hit_state) //jamesToDo: remove this line, it's unnecessary (I hope?)
         }
       } .elsewhen (CPUWriteIntent && !s2_uncached) { //prefetching write permissions early
-        assert(s2_hit_state.isStable())
         when (!s2_hit_state.isValid()) {
           assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss I->E
@@ -1182,7 +1194,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         }.elsewhen (s2_hit_state.hasWritePermission()._2) {
           s1_nack := true
-          //jamesToDo: verify that this doesn't happen
         }.elsewhen (!s2_hit_state.hasWritePermission()._1) {
           assert(s2_hit_state === CustomClientMetadata(CustomClientStates.S))
           sendAMessage(acquire(s2_req.addr, TLPermissions.BtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
@@ -1193,8 +1204,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         }
       } .elsewhen (CPURead && !s2_uncached) {
         assert(!isWrite(s2_req.cmd) && !isWriteIntent(s2_req.cmd))
-        assert(s2_hit_state.isStable()) //not incorrect, but shouldn't happen on in-order processor
-        when (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
+        when (s2_hit_state.hasReadPermission()._2) {
+          s1_nack := true
+        } .elsewhen (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
           assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
           when (!cached_grant_wait) { //jamesToDo: is this if necessary?
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoB), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //jamesToDo what about MI protocol?
@@ -1203,10 +1215,8 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           } .otherwise {
             s1_nack := true
           }
-        } .elsewhen (s2_hit_state.hasReadPermission()._2) {
-          s1_nack := true
-        }.otherwise {
-          s2_new_hit_state := s2_hit_state //JamesCurrTest
+        } .otherwise {
+          s2_new_hit_state := s2_hit_state
           //jamesToDo: should have option to update state
           //jamesToDo: notifyL2?
         }
@@ -1316,7 +1326,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       writeMetaHelper(addr, way, index, data, write, valid, 3.U)
     }
     def writeMetaRelease() = { //downgrading permissions on voluntary and involuntary releases
-      val valid = release_state.isOneOf(s_voluntary_write_meta, s_probe_write_meta)
+      val valid = release_state.isOneOf(s_voluntary_write_meta, s_probe_write_meta, s_voluntary_ack_write_meta)
       val write = true
       probeWay := releaseWay
       val index = probeIdx(probe_bits)
