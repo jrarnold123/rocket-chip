@@ -39,7 +39,7 @@ object CustomMemoryOpCategories extends MemoryOpConstants {
     } .otherwise {
       out := 0.U
     }
-    assert(out.isOneOf(wr,wi,rd), "Could not categorize command.")
+    //assert(out.isOneOf(wr,wi,rd), "Could not categorize command.")
     out
   }
 }
@@ -103,19 +103,18 @@ class CustomClientMetadata extends Bundle {
     ))
   }
 
-  def onMiss(cmd: UInt): CustomClientMetadata = {
+  def onMiss(cmd: UInt): (CustomClientMetadata, UInt) = {
     import CustomClientStates._
     import CustomMemoryOpCategories._
+    import TLPermissions._
+
     val c = categorize(cmd)
-
-    val out = Wire(UInt())
-
 
     /**not sure why the MuxLookup doesn't work here.
     I remember having trouble with that in the past too
     JamesToDo: try using a MuxTLookup with a dummy UInt(0) as second val**/
     //NOTE: THE WRITES MUST BE CHECKED BEFORE READS
-    when (state === I) {
+    /*when (state === I) {
       when (c === wi || c === wr) {
         out := IM
       } .elsewhen(c === rd) {
@@ -130,17 +129,16 @@ class CustomClientMetadata extends Bundle {
       } .otherwise {
         out := state
       }
-    }
+    }*/
 
-    /*val out = MuxLookup(Cat(c, state), UInt(0), Seq(
-      Cat(rd, I)    -> IS,
-      Cat(wi, I)    -> IM,
-      Cat(wr, I)    -> IM,
-      Cat(wi, S)    -> SM,
-      Cat(wr, S)    -> SM
-    ))*/
+    val out = MuxTLookup(Cat(c, state), (UInt(0), UInt(0)), Seq(
+      Cat(wr, I)    -> (IM, NtoT),
+      Cat(wi, I)    -> (IM, NtoT),
+      Cat(rd, I)    -> (IS, NtoB),
+      Cat(wr, S)    -> (SM, BtoT),
+      Cat(wi, S)    -> (SM, BtoT)))
     
-    CustomClientMetadata(out)
+    (CustomClientMetadata(out._1), out._2)
   }
 
   def onHit(cmd: UInt): CustomClientMetadata = {
