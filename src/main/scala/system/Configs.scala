@@ -22,7 +22,7 @@ class BaseConfig extends Config(
   new BaseSubsystemConfig()
 )
 
-class DefaultConfig extends Config(new WithNBigCores(1) ++ new WithCoherentBusTopology ++ new WithInclusiveCache ++ new BaseConfig) //jamesToDid: added wIC here
+class DefaultConfig extends Config(new WithNBigCores(4) ++ new WithCoherentBusTopology ++ new WithInclusiveCache ++ new BaseConfig) //jamesToDid: added wIC here
 
 class L2CacheConfig extends Config(new WithInclusiveCache ++ new DefaultConfig) //jamesToDid: added this line
 class DefaultBufferlessConfig extends Config(new WithBufferlessBroadcastHub ++ new DefaultConfig)

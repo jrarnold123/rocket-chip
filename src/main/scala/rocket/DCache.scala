@@ -173,6 +173,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     // ! fire is "ready and valid" boolean, basically checking if there's a message waiting there
     val s1_valid = Reg(next=io.cpu.req.fire(), init=Bool(false))
     val probe_bits = RegEnable(tl_out.b.bits, tl_out.b.fire()) // TODO has data now :(
+    assert(!tl_out.b.ready|| !tl_out_c.valid)
     val s1_nack = Wire(init=Bool(false))
     val s1_valid_masked = s1_valid && !io.cpu.s1_kill
     val s1_valid_not_nacked = s1_valid && !s1_nack
@@ -613,7 +614,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val blockProbeAfterGrantCount = Reg(init=UInt(0))
     when (blockProbeAfterGrantCount > 0) { blockProbeAfterGrantCount := blockProbeAfterGrantCount - 1 }
     val canAcceptCachedGrant = !release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta, s_voluntary_release, s_voluntary_ack_write_meta)
-    tl_out.d.ready := Mux(grantIsCached, (!d_first || tl_out.e.ready) && canAcceptCachedGrant, true.B) //always ready for ReleaseAck, new grants are only accepted when e is ready and not evicting
+    tl_out.d.ready := Mux(grantIsCached, (!d_first || tl_out.e.ready) && canAcceptCachedGrant, release_state === s_ready/*true.B*/) //always ready for ReleaseAck, new grants are only accepted when e is ready and not evicting //jamesCurrTest
     val uncachedRespIdxOH = UIntToOH(tl_out.d.bits.source, maxUncachedInFlight+mmioOffset) >> mmioOffset
     uncachedResp := Mux1H(uncachedRespIdxOH, uncachedReqs)
     when (tl_out.d.fire()) {
@@ -727,10 +728,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     //Input Types
     val grantToT = grantIsCached && tl_out.d.valid && tl_out.d.bits.param === TLPermissions.toT
     val grantToB = grantIsCached && tl_out.d.valid && tl_out.d.bits.param === TLPermissions.toB
-    val releaseAck = tl_out.d.valid && tl_out.d.bits.opcode === 6.U 
+    val releaseAck = tl_out.d.fire() && tl_out.d.bits.opcode === 6.U //jamesCurrTest
     val CPUWrite = !io.cpu.s2_kill && isWrite(s2_req.cmd) && s2_req_valid
     val CPUWriteIntent = !io.cpu.s2_kill && isWriteIntent(s2_req.cmd) && s2_req_valid
     val CPURead =  !io.cpu.s2_kill && isRead(s2_req.cmd) && s2_req_valid
+
+    //JamesToDid: added this test for simpler wavetrace reading
+    //JamesToDo: remove this test
+    val isDesiredAddr = io.cpu.req.valid && (io.cpu.req.bits.addr === "h85000000".U || io.cpu.req.bits.addr === "h86000000".U || io.cpu.req.bits.addr === "h87000000".U)
+    assert(isDesiredAddr || !CPURead || !CPUWrite || !CPUWriteIntent || io.cpu.req.valid || !io.cpu.req.valid)
 
 
 
