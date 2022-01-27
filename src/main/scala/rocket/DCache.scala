@@ -299,19 +299,13 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val s1_probe = RegEnable(next=tl_out.b.fire(), init=Bool(false), !s2_probe_stall && !s2_probe_stall_latch)
     val s2_probe_way = RegEnable(s1_hit_way, s1_probe && !s2_probe_stall_latch)
     val s2_probe_state = RegEnable(s1_hit_state, init=CustomClientMetadata(CustomClientStates.I), s1_probe && !s2_probe_stall_latch) //jamesToDid: adding an initial state
-    assert(!s1_probe || s1_hit_state =/= CustomClientMetadata(CustomClientStates.SM))
     when (s1_probe && !s2_probe_stall_latch) {
       s2_probe_stall := !s1_hit_state.isStable()
     } .elsewhen (s2_probe_stall_latch) {
-      assert(Bool(false)) //please don't let this work
-      assert(s2_probe_state === CustomClientMetadata(CustomClientStates.SM))
       s2_probe_stall := !s2_probe_state.isStable()
     } .otherwise {
       s2_probe_stall := Bool(false)
     }
-    assert(!s2_probe_stall)
-    assert(!s2_probe_stall_latch)
-    assert(!s1_probe || s1_hit_state =/= CustomClientMetadata(CustomClientStates.SM))
 
 
     val s1_data_way = Wire(init = if (nWays == 1) 1.U else Mux(inWriteback, releaseWay, s1_hit_way))
@@ -432,7 +426,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       s1_nack := true
     }
 
-    assert(s2_probe_state =/= CustomClientMetadata(CustomClientStates.IS))
     val (s2_prb_ack_data, s2_report_param, probeNewCoh)= s2_probe_state.onProbe(probe_bits.param) 
     val (s2_victim_dirty, s2_shrink_param, voluntaryNewCoh) = s2_victim_state.onCacheControl(M_FLUSH)
     dontTouch(s2_victim_dirty)
@@ -682,7 +675,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val block_probe_for_ordering = releaseInFlight || block_probe_for_pending_release_ack || grantInProgress || s2_probe_stall
 
     //block b messages if we're still waiting for one to be handled, block_probe cases, or if we already have something in s1 or s2
-    tl_out.b.ready := metaArb.io.in(6).ready && !(block_probe_for_core_progress || block_probe_for_ordering || s1_valid || s2_valid || s1_probe) //jamesTodo: need to test the addition of s1_probe
+    tl_out.b.ready := metaArb.io.in(6).ready && !(block_probe_for_core_progress || block_probe_for_ordering || s1_valid || s2_valid || s1_probe || tl_out.d.valid) //jamesTodo: need to test the addition of s1_probe //jamesToDid: added valid check
 
     // replacement policy... voodoo... I don't even know which if case gets used but I'm pretty sure it's the else case
     s1_victim_way := (if (replacer.perSet && nWays > 1) {
@@ -735,7 +728,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
     //JamesToDid: added this test for simpler wavetrace reading
     //JamesToDo: remove this test
-    val isDesiredAddr = io.cpu.req.valid && (io.cpu.req.bits.addr === "h85000000".U || io.cpu.req.bits.addr === "h86000000".U || io.cpu.req.bits.addr === "h87000000".U)
+    val isDesiredAddr = io.cpu.req.valid && (io.cpu.req.bits.addr === "h85000000".U || io.cpu.req.bits.addr === "h85100000".U || io.cpu.req.bits.addr === "h85200000".U || io.cpu.req.bits.addr === "h85300000".U || io.cpu.req.bits.addr === "h85400000".U)
     assert(isDesiredAddr || !CPURead || !CPUWrite || !CPUWriteIntent || io.cpu.req.valid || !io.cpu.req.valid)
 
 
