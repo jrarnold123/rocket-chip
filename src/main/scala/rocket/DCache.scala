@@ -296,13 +296,14 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       }
     val s2_probe_stall = Wire(Bool()) //jamesToDo
     val s2_probe_stall_latch = Reg(next=s2_probe_stall,init=Bool(false))
-    val s1_probe = RegEnable(next=tl_out.b.fire(), init=Bool(false), !s2_probe_stall && !s2_probe_stall_latch)
+    val s1_probe = RegEnable(next=tl_out.b.fire(), init=Bool(false), !s2_probe_stall) //jamesToDid: got rid of latch enable, just wire now
     val s2_probe_way = RegEnable(s1_hit_way, s1_probe && !s2_probe_stall_latch)
-    val s2_probe_state = RegEnable(s1_hit_state, init=CustomClientMetadata(CustomClientStates.I), s1_probe && !s2_probe_stall_latch) //jamesToDid: adding an initial state
+    val s1_probe_delayed = Reg(s1_probe && !s2_probe_stall_latch)
+    val s2_probe_state = RegEnable(s1_hit_state, init=CustomClientMetadata(CustomClientStates.I), s1_probe && !s2_probe_stall_latch)
     when (s1_probe && !s2_probe_stall_latch) {
-      s2_probe_stall := !s1_hit_state.isStable()
+      s2_probe_stall := !s1_hit_state.isStable() || tl_out.d.valid //jamesToDid: added the d valid bit
     } .elsewhen (s2_probe_stall_latch) {
-      s2_probe_stall := !s2_probe_state.isStable()
+      s2_probe_stall := !s2_probe_state.isStable() || tl_out.d.valid //jamesToDid: added the d valid bit
     } .otherwise {
       s2_probe_stall := Bool(false)
     }
@@ -672,7 +673,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     // Handle an incoming TileLink Probe message
     val block_probe_for_core_progress = blockProbeAfterGrantCount > 0 || lrscValid
     val block_probe_for_pending_release_ack = release_ack_wait && (tl_out.b.bits.address ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0
-    val block_probe_for_ordering = releaseInFlight || block_probe_for_pending_release_ack || grantInProgress || s2_probe_stall
+    val block_probe_for_ordering = releaseInFlight || block_probe_for_pending_release_ack || grantInProgress || s2_probe_stall || s2_probe_stall_latch //jamesToDid: added probe_stall_latch
 
     //block b messages if we're still waiting for one to be handled, block_probe cases, or if we already have something in s1 or s2
     tl_out.b.ready := metaArb.io.in(6).ready && !(block_probe_for_core_progress || block_probe_for_ordering || s1_valid || s2_valid || s1_probe || tl_out.d.valid) //jamesTodo: need to test the addition of s1_probe //jamesToDid: added valid check
@@ -702,7 +703,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val (c_first, c_last, releaseDone, c_count) = edge.count(tl_out_c)
     val releaseRejected = Wire(Bool())
     val s1_release_data_valid = Reg(next = dataArb.io.in(2).fire())
-    val s2_release_data_valid = RegEnable(next = s1_release_data_valid && !releaseRejected, !s2_probe_stall)
+    val s2_release_data_valid = RegEnable(next = s1_release_data_valid && !releaseRejected, !s2_probe_stall) //jamesToDo: why did I add !s2_probe_stall as a condition?
     releaseRejected := s2_release_data_valid && !tl_out_c.fire()
     val releaseDataBeat = Cat(UInt(0), c_count) + Mux(releaseRejected, UInt(0), s1_release_data_valid + Cat(UInt(0), s2_release_data_valid))
 
