@@ -16,9 +16,9 @@ object CustomClientStates {
   def SM = UInt(4, width)
   def E = UInt(5, width)
   def M = UInt(6, width)
-  def MI = UInt(7, width) //not implemented yet
+  def MI = UInt(7, width) 
   def EI = UInt(8, width) //not implemented yet
-  def SI = UInt(9, width) //not implemented yet
+  def SI = UInt(9, width) 
   def II = UInt(10, width) //not implemented yet
 }
 
@@ -59,7 +59,7 @@ class CustomClientMetadata extends Bundle {
   def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
 
   /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I && state <= CustomClientStates.II
+  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I && state <= CustomClientStates.II //jamesTODO: check if this can be just != I
 
   def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
 
@@ -70,12 +70,12 @@ class CustomClientMetadata extends Bundle {
   def hasReadPermission(): (Bool, Bool) = {
     import CustomClientStates._
     MuxTLookup(state, (Bool(false),Bool(true)), Seq( //JamesToDo: consider changing default to false false?
-              //canRead     //mustStall
+              //canRead     //don't send request
       I     -> (Bool(false), Bool(false)),
       IS    -> (Bool(false), Bool(true)),
       IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(true), Bool(false)),
-      SM    -> (Bool(true), Bool(false)),
+      SM    -> (Bool(true), Bool(false)), //jamesTODO: modify newFSM to allow the second one to be true, also don't let transients read
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
       MI    -> (Bool(false), Bool(true)),
@@ -110,27 +110,8 @@ class CustomClientMetadata extends Bundle {
 
     val c = categorize(cmd)
 
-    /**not sure why the MuxLookup doesn't work here.
-    I remember having trouble with that in the past too
-    JamesToDo: try using a MuxTLookup with a dummy UInt(0) as second val**/
     //NOTE: THE WRITES MUST BE CHECKED BEFORE READS
-    /*when (state === I) {
-      when (c === wi || c === wr) {
-        out := IM
-      } .elsewhen(c === rd) {
-        out := IS
-        assert(c =/= wi && c =/= wr)
-      } . otherwise {
-        out := state
-      }
-    } .elsewhen (state === S) {
-      when (c === wi || c === wr) {
-        out := SM
-      } .otherwise {
-        out := state
-      }
-    }*/
-
+    //JamesTODO: check if the above is still true now that Categorize() has been fixed
     val out = MuxTLookup(Cat(c, state), (UInt(0), UInt(0)), Seq(
       Cat(wr, I)    -> (IM, NtoT),
       Cat(wi, I)    -> (IM, NtoT),
@@ -141,17 +122,7 @@ class CustomClientMetadata extends Bundle {
     (CustomClientMetadata(out._1), out._2)
   }
 
-  def onHit(cmd: UInt): CustomClientMetadata = {
-    import CustomClientStates._
-    import CustomMemoryOpCategories._
-    val c = categorize(cmd)
-
-    CustomClientMetadata(MuxLookup(Cat(c, state), UInt(0), Seq(
-      Cat(wi, E)    -> E,
-      Cat(wr, E)    -> M
-    )))
-  }
-
+  //jamesTODO: change to MuxTLookup with dummy value as second return
   def onWrite(): CustomClientMetadata = {
     val temp = CustomClientMetadata(CustomClientStates.I)
     when (state === CustomClientStates.E) {
@@ -215,13 +186,8 @@ class CustomClientMetadata extends Bundle {
     assert(param === toN)
     MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
       //(param,state) ->      (dirty, param, next state)
-      //JamesToDo: CHANGE TO MI MI SI
-      //works with IM IM IM for some reason (I made a typo and it passed)
-      //Gibberish (but passes) with IM IM IS
-      //MI MI MI gives gibberish
-      //Now testing I I I to make "good-output" wavetrace
       Cat(toN, M)     ->      (Bool(true),  TtoN, CustomClientMetadata(MI)),
-      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(MI)),
+      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(MI)), //jamesToDid: check if this can be changed to EI
       Cat(toN, S)     ->      (Bool(false), BtoN, CustomClientMetadata(SI))))
   }
 
