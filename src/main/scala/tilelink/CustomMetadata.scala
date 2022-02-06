@@ -75,7 +75,7 @@ class CustomClientMetadata extends Bundle {
       IS    -> (Bool(false), Bool(true)),
       IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(true), Bool(false)),
-      SM    -> (Bool(true), Bool(true)), //jamesToDid: modify newFSM to allow the second one to be true, also don't let transients read
+      SM    -> (Bool(true), Bool(true)),
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
       MI    -> (Bool(false), Bool(true)),
