@@ -17,7 +17,7 @@ object CustomClientStates {
   def E = UInt(5, width)
   def M = UInt(6, width)
   def MI = UInt(7, width) 
-  def EI = UInt(8, width) //not implemented yet
+  def EI = UInt(8, width)
   def SI = UInt(9, width) 
   def II = UInt(10, width) //not implemented yet
 }
@@ -187,7 +187,7 @@ class CustomClientMetadata extends Bundle {
     MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
       //(param,state) ->      (dirty, param, next state)
       Cat(toN, M)     ->      (Bool(true),  TtoN, CustomClientMetadata(MI)),
-      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(MI)), //jamesToDid: check if this can be changed to EI
+      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(EI)), //jamesToDid: check if this can be changed to EI
       Cat(toN, S)     ->      (Bool(false), BtoN, CustomClientMetadata(SI))))
   }
 
