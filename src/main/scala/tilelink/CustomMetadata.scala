@@ -59,7 +59,7 @@ class CustomClientMetadata extends Bundle {
   def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
 
   /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state =/= CustomClientStates.I //jamesToDid: check if this can be just != I
+  def isValid(dummy: Int = 0): Bool = state =/= CustomClientStates.I
 
   def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
 
@@ -75,7 +75,7 @@ class CustomClientMetadata extends Bundle {
       IS    -> (Bool(false), Bool(true)),
       IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(true), Bool(false)),
-      SM    -> (Bool(true), Bool(false)), //jamesTODO: modify newFSM to allow the second one to be true, also don't let transients read
+      SM    -> (Bool(true), Bool(true)), //jamesToDid: modify newFSM to allow the second one to be true, also don't let transients read
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
       MI    -> (Bool(false), Bool(true)),
