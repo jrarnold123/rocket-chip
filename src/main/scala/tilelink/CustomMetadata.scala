@@ -59,7 +59,7 @@ class CustomClientMetadata extends Bundle {
   def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
 
   /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state > CustomClientStates.I && state <= CustomClientStates.II //jamesTODO: check if this can be just != I
+  def isValid(dummy: Int = 0): Bool = state =/= CustomClientStates.I //jamesToDid: check if this can be just != I
 
   def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
 
@@ -187,7 +187,7 @@ class CustomClientMetadata extends Bundle {
     MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
       //(param,state) ->      (dirty, param, next state)
       Cat(toN, M)     ->      (Bool(true),  TtoN, CustomClientMetadata(MI)),
-      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(EI)), //jamesToDid: check if this can be changed to EI
+      Cat(toN, E)     ->      (Bool(false), TtoN, CustomClientMetadata(EI)),
       Cat(toN, S)     ->      (Bool(false), BtoN, CustomClientMetadata(SI))))
   }
 
