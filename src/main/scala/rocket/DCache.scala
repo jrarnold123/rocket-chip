@@ -1139,12 +1139,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       when (s2_probe) { //when probeBlock reaches s2
         assert(s2_probe_state.isStable())
         s1_nack := true //nacks the instruction to buy more time if we need to writeback, this is undone later in code when applicable
-        when (s2_prb_ack_data) { // jamesToDo: make isDirty
-          assert(s2_probe_state.isDirty())
+        when (s2_prb_ack_data) {
           sendCMessage(dirtyProbeAckMessage, (s2_release_data_valid)) //M will conflict with any probe and needs to be written back
           release_state := s_probe_rep_dirty //this allows FSM to continue writing a multi-cycle message
         } .elsewhen (s2_probe_state.isValid()) {
-          assert(!s2_probe_state.isDirty())
           sendCMessage(cleanProbeAckMessage, true.B) //E and S have no data to be written back, unclear whether metadata needs to be modified yet
           release_state := Mux(releaseDone, s_probe_write_meta, s_probe_rep_clean) //finish sending the reply and then change to s_probe_write_meta to determine what metadata changes need to occur
         } .elsewhen (!s2_probe_state.isValid()) { //redundant if statement... could be else

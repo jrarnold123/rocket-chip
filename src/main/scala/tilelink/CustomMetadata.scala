@@ -63,10 +63,6 @@ class CustomClientMetadata extends Bundle {
 
   def isStable(): Bool = (state === CustomClientStates.M || state === CustomClientStates.E || state === CustomClientStates.S || state === CustomClientStates.I)
 
-  def isDirty(): Bool = {
-    (state === CustomClientStates.M || state === CustomClientStates.MI)
-  }
-
   def hasReadPermission(): (Bool, Bool) = {
     import CustomClientStates._
     MuxTLookup(state, (Bool(false),Bool(true)), Seq( //JamesToDo: consider changing default to false false?
