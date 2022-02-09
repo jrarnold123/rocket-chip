@@ -11,15 +11,17 @@ object CustomClientStates {
   val width = 4
   def I = UInt(0, width)
   def IS = UInt(1, width)
-  def IM = UInt(2, width)
-  def S = UInt(3, width)
-  def SM = UInt(4, width)
-  def E = UInt(5, width)
-  def M = UInt(6, width)
-  def MI = UInt(7, width) 
-  def EI = UInt(8, width)
-  def SI = UInt(9, width) 
-  def II = UInt(10, width) //not implemented yet
+  def IE = UInt(2, width)
+  def IM = UInt(3, width)
+  def S = UInt(4, width)
+  def SE = UInt(5, width)
+  def SM = UInt(6, width)
+  def E = UInt(7, width)
+  def M = UInt(8, width)
+  def MI = UInt(9, width) 
+  def EI = UInt(10, width)
+  def SI = UInt(11, width) 
+  def II = UInt(12, width) //not implemented yet
 }
 
 object CustomMemoryOpCategories extends MemoryOpConstants {
@@ -69,8 +71,10 @@ class CustomClientMetadata extends Bundle {
               //canRead     //don't send request
       I     -> (Bool(false), Bool(false)),
       IS    -> (Bool(false), Bool(true)),
+      IE    -> (Bool(false), Bool(true)),
       IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(true), Bool(false)),
+      SE    -> (Bool(true), Bool(true)),
       SM    -> (Bool(true), Bool(true)),
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
@@ -87,8 +91,10 @@ class CustomClientMetadata extends Bundle {
               //canWrite    //mustStall
       I     -> (Bool(false), Bool(false)),
       IS    -> (Bool(false), Bool(true)),
+      IE    -> (Bool(false), Bool(true)),
       IM    -> (Bool(false), Bool(true)),
       S     -> (Bool(false), Bool(false)),
+      SE    -> (Bool(false), Bool(true)),
       SM    -> (Bool(false), Bool(true)),
       M     -> (Bool(true), Bool(false)),
       E     -> (Bool(true), Bool(false)),
@@ -110,10 +116,21 @@ class CustomClientMetadata extends Bundle {
     //JamesTODO: check if the above is still true now that Categorize() has been fixed
     val out = MuxTLookup(Cat(c, state), (UInt(0), UInt(0)), Seq(
       Cat(wr, I)    -> (IM, NtoT),
-      Cat(wi, I)    -> (IM, NtoT),
+      Cat(wi, I)    -> (IE, NtoT),
       Cat(rd, I)    -> (IS, NtoB),
       Cat(wr, S)    -> (SM, BtoT),
-      Cat(wi, S)    -> (SM, BtoT)))
+      Cat(wi, S)    -> (SE, BtoT)))
+    
+    assert(c === wr || c === wi || c=== rd)
+    assert(state =/= M && state =/= E)
+    assert(state =/= IM)
+    assert(state =/= IE)
+    assert(state =/= IS)
+    assert(state =/= SM)
+    assert(state =/= SE)
+    assert(state === S || state === I)
+    assert(c =/= rd || state === I)
+    assert(out._1 =/= I)
     
     (CustomClientMetadata(out._1), out._2)
   }
@@ -134,10 +151,21 @@ class CustomClientMetadata extends Bundle {
     import TLPermissions._
     import CustomClientStates._
 
-    MuxTLookup(param, (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      //param ->      (dirty, param, next state)
-      toT     ->      (Bool(false), UInt(0), CustomClientMetadata(E)),
-      toB     ->      (Bool(false), UInt(0), CustomClientMetadata(S))
+    assert(state =/= S)
+    assert(state =/= I)
+    assert(state =/= M)
+    assert(state =/= E)
+    assert(state =/= MI)
+    assert(state =/= SI)
+    
+
+    MuxTLookup(Cat(state, param), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
+      //state, param ->      (dummy,       dummy,   nextState)
+      Cat(IE, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(E)),
+      Cat(SE, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(E)),
+      Cat(IM, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(M)),
+      Cat(SM, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(M)),
+      Cat(IS, toB)     ->      (Bool(false), UInt(0), CustomClientMetadata(S))
     ))._3
     
     
