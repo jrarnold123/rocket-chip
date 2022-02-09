@@ -133,15 +133,14 @@ class CustomClientMetadata extends Bundle {
   def onGrant(param: UInt): CustomClientMetadata = {
     import TLPermissions._
     import CustomClientStates._
-    val nextState = Wire(UInt())
+
+    MuxTLookup(param, (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
+      //param ->      (dirty, param, next state)
+      toT     ->      (Bool(false), UInt(0), CustomClientMetadata(E)),
+      toB     ->      (Bool(false), UInt(0), CustomClientMetadata(S))
+    ))._3
     
-    when (param === toB) {
-      nextState := S
-    } .otherwise {
-      assert(!isCap(param) || param === toT)
-      nextState := E
-    }
-    CustomClientMetadata(nextState)
+    
   }
 
   def onProbe(param: UInt): (Bool, UInt, CustomClientMetadata) = {
