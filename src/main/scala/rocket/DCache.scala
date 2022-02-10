@@ -428,6 +428,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       s1_nack := true
     }
 
+    assert(tl_out.b.bits.param =/= TLPermissions.toT || !tl_out.b.valid)
     val (s2_prb_ack_data, s2_report_param, probeNewCoh)= s2_probe_state.onProbe(probe_bits.param) 
     val (s2_victim_dirty, s2_shrink_param, voluntaryNewCoh) = s2_victim_state.onCacheControl(M_FLUSH)
     dontTouch(s2_victim_dirty)
@@ -1121,7 +1122,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           //release_state := s_voluntary_write_meta
           release_state := s_voluntary_ack_write_meta //otherwise we just update the metadata to reflect the eviction
         }
-        probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB) //update probe_bits with new eviction info
+        probe_bits := addressToProbe(s2_vaddr, Cat(s2_victim_tag, s2_req.addr(tagLSB-1, idxLSB)) << idxLSB, probe_bits) //update probe_bits with new eviction info
       }
 
       //D Channel Inputs
@@ -1139,6 +1140,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
       //B Channel Inputs
       when (s2_probe) { //when probeBlock reaches s2
+        assert(probe_bits.param =/= TLPermissions.toT)
         assert(s2_probe_state.isStable())
         s1_nack := true //nacks the instruction to buy more time if we need to writeback, this is undone later in code when applicable
         when (s2_prb_ack_data) {
@@ -1166,7 +1168,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           assert(newPerm === TLPermissions.NtoT)
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1 //IM
-          assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
+          //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         } .elsewhen (s2_hit_state.hasWritePermission()._2) {
           s1_nack := true 
         } .elsewhen (!s2_hit_state.hasWritePermission()._1) { //is valid and doesnt have to stall but doesn't have permissions
@@ -1177,7 +1179,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
             newPerm := s2_hit_state.onMiss(s2_req.cmd)._2
             assert(newPerm === TLPermissions.BtoT)
             sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss)
-            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
+            //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
           } .otherwise {
             //jamesToDo: verify that this doesn't happen
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
@@ -1197,7 +1199,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           assert(newPerm === TLPermissions.NtoT)
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss I->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
-          assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
+          //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         }.elsewhen (s2_hit_state.hasWritePermission()._2) {
           s1_nack := true
         }.elsewhen (!s2_hit_state.hasWritePermission()._1) {
@@ -1206,7 +1208,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           assert(newPerm === TLPermissions.BtoT)
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
-          assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
+          //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
         } .otherwise {
           s2_new_hit_state := s2_hit_state
         }
@@ -1221,7 +1223,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
             assert(newPerm === TLPermissions.NtoB)
             sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //jamesToDo what about MI protocol?
             s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
-            assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
+            //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
           } .otherwise {
             s1_nack := true
           }
@@ -1423,8 +1425,9 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   require(!usingVM || tagLSB <= pgIdxBits, s"D$$ set size must not exceed ${1<<(pgIdxBits-10)} KiB; got ${(nSets * cacheBlockBytes)>>10} KiB")
   def tagLSB: Int = untagBits
   def probeIdx(b: TLBundleB): UInt = b.address(idxMSB, idxLSB)
-  def addressToProbe(vaddr: UInt, paddr: UInt): TLBundleB = {
+  def addressToProbe(vaddr: UInt, paddr: UInt, probe_bits: TLBundleB): TLBundleB = {
     val res = Wire(new TLBundleB(edge.bundle))
+    res := probe_bits
     res.address := paddr
     res.source := mmioOffset - 1
     res
