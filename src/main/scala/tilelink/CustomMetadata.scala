@@ -81,9 +81,6 @@ object CustomClientStates {
   def I_store  = UInt(10, width)
   def I_load  = UInt(11, width)
   def I  = UInt(0, width)
-  def E_evict_x_I  = UInt(13, width)
-  def E_evict  = UInt(14, width)
-  def E  = UInt(15, width)
 
 }
 /** Stores the client-side coherence information,
@@ -113,47 +110,41 @@ class CustomClientMetadata extends Bundle {
   /** Is the block's data present in this cache */
   def isValid(dummy: Int = 0): Bool = state =/= CustomClientStates.I
 
-  def isStable(): Bool = (state === CustomClientStates.E || state === CustomClientStates.I || state === CustomClientStates.M || state === CustomClientStates.S)
+  def isStable(): Bool = (state === CustomClientStates.S || state === CustomClientStates.M || state === CustomClientStates.I)
   
   def hasReadPermission(): (Bool, Bool) = {
     import CustomClientStates._
     MuxTLookup(state, (Bool(false),Bool(true)), Seq(
-      S_storePrefetch    -> (Bool(false), Bool(true)),
-      E    -> (Bool(true), Bool(false)),
-      E_evict    -> (Bool(false), Bool(true)),
-      M    -> (Bool(true), Bool(false)),
-      E_evict_x_I    -> (Bool(false), Bool(true)),
-      M_evict    -> (Bool(false), Bool(true)),
       I_load    -> (Bool(false), Bool(true)),
-      S_evict_x_I    -> (Bool(false), Bool(true)),
-      I_store    -> (Bool(false), Bool(true)),
-      M_evict_x_I    -> (Bool(false), Bool(true)),
-      I_storePrefetch    -> (Bool(false), Bool(true)),
-      S_store    -> (Bool(false), Bool(true)),
+      S_storePrefetch    -> (Bool(false), Bool(true)),
+      M_evict    -> (Bool(false), Bool(true)),
       S_evict    -> (Bool(false), Bool(true)),
       I    -> (Bool(false), Bool(false)),
-      S    -> (Bool(true), Bool(false))
+      S_store    -> (Bool(false), Bool(true)),
+      S    -> (Bool(true), Bool(false)),
+      M_evict_x_I    -> (Bool(false), Bool(true)),
+      M    -> (Bool(true), Bool(false)),
+      I_storePrefetch    -> (Bool(false), Bool(true)),
+      S_evict_x_I    -> (Bool(false), Bool(true)),
+      I_store    -> (Bool(false), Bool(true))
     ))
   }
   
   def hasWritePermission(): (Bool, Bool) = {
     import CustomClientStates._
     MuxTLookup(state, (Bool(false), Bool(true)), Seq(
-      S_storePrefetch    -> (Bool(false), Bool(true)),
-      E    -> (Bool(true), Bool(false)),
-      E_evict    -> (Bool(false), Bool(true)),
-      M    -> (Bool(true), Bool(false)),
-      E_evict_x_I    -> (Bool(false), Bool(true)),
-      M_evict    -> (Bool(false), Bool(true)),
       I_load    -> (Bool(false), Bool(true)),
-      S_evict_x_I    -> (Bool(false), Bool(true)),
-      I_store    -> (Bool(false), Bool(true)),
-      M_evict_x_I    -> (Bool(false), Bool(true)),
-      I_storePrefetch    -> (Bool(false), Bool(true)),
-      S_store    -> (Bool(false), Bool(true)),
+      S_storePrefetch    -> (Bool(false), Bool(true)),
+      M_evict    -> (Bool(false), Bool(true)),
       S_evict    -> (Bool(false), Bool(true)),
       I    -> (Bool(false), Bool(false)),
-      S    -> (Bool(false), Bool(false))
+      S_store    -> (Bool(false), Bool(true)),
+      S    -> (Bool(false), Bool(false)),
+      M_evict_x_I    -> (Bool(false), Bool(true)),
+      M    -> (Bool(true), Bool(false)),
+      I_storePrefetch    -> (Bool(false), Bool(true)),
+      S_evict_x_I    -> (Bool(false), Bool(true)),
+      I_store    -> (Bool(false), Bool(true))
     ))
   }
   /** Metadata change on a returned Grant */
@@ -162,20 +153,17 @@ class CustomClientMetadata extends Bundle {
     import CustomClientStates._
     
     MuxTLookup(Cat(state, param), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      Cat(S_storePrefetch, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(E)),
+      Cat(I_load, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
       Cat(I_load, toB)  ->  (Bool(false), UInt(0), CustomClientMetadata(S)),
-      Cat(I_store, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
-      Cat(I_storePrefetch, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(E)),
-      Cat(S_store, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M))
+      Cat(S_storePrefetch, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
+      Cat(S_store, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
+      Cat(I_storePrefetch, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
+      Cat(I_store, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M))
     ))._3
   }
   def onWrite(): CustomClientMetadata = {
     val temp = CustomClientMetadata(CustomClientStates.I)
-    when (state === CustomClientStates.E) {
-      temp := CustomClientMetadata(CustomClientStates.M)
-    } .otherwise {
-      temp := CustomClientMetadata(state)
-    }
+    temp := CustomClientMetadata(state)
     temp
   }
   def onCacheControl(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
@@ -183,23 +171,20 @@ class CustomClientMetadata extends Bundle {
     import TLPermissions._
     val param = cmdToPermCap(cmd)
     MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      Cat(toN, E)    ->  (Bool(false), TtoN, CustomClientMetadata(E_evict)),
-      Cat(toN, M)    ->  (Bool(true), TtoN, CustomClientMetadata(M_evict)),
-      Cat(toN, S)    ->  (Bool(false), BtoN, CustomClientMetadata(S_evict))
+      Cat(toN, S)    ->  (Bool(false), BtoN, CustomClientMetadata(S_evict)),
+      Cat(toN, M)    ->  (Bool(true), TtoN, CustomClientMetadata(M_evict))
     ))
   }
   def onProbe(param: UInt): (Bool, UInt, CustomClientMetadata) = {
     import TLPermissions._
     import CustomClientStates._
     MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      Cat(toB, E)  ->  (Bool(false), TtoB, CustomClientMetadata(S)),
-      Cat(toN, E)  ->  (Bool(false), TtoN, CustomClientMetadata(I)),
-      Cat(toN, M)  ->  (Bool(true), TtoN, CustomClientMetadata(I)),
-      Cat(toB, M)  ->  (Bool(true), TtoB, CustomClientMetadata(S)),
       Cat(toN, I)  ->  (Bool(false), NtoN, CustomClientMetadata(I)),
       Cat(toB, I)  ->  (Bool(false), NtoN, CustomClientMetadata(I)),
       Cat(toB, S)  ->  (Bool(false), BtoB, CustomClientMetadata(S)),
-      Cat(toN, S)  ->  (Bool(false), BtoN, CustomClientMetadata(I))
+      Cat(toN, S)  ->  (Bool(false), BtoN, CustomClientMetadata(I)),
+      Cat(toN, M)  ->  (Bool(true), TtoN, CustomClientMetadata(I)),
+      Cat(toB, M)  ->  (Bool(true), TtoB, CustomClientMetadata(S))
     ))
   }
   def onMiss(cmd: UInt): (CustomClientMetadata, UInt) = {
@@ -212,7 +197,7 @@ class CustomClientMetadata extends Bundle {
     val out = MuxTLookup(Cat(c, state), (UInt(0), UInt(0)), Seq(
       Cat(wr, I)    ->  (I_store, NtoT),
       Cat(wi, I)    ->  (I_storePrefetch, NtoT),
-      Cat(rd, I)    ->  (I_load, NtoB), 
+      Cat(rd, I)    ->  (I_load, NtoT), 
       Cat(wr, S)    ->  (S_store, BtoT),
       Cat(wi, S)    ->  (S_storePrefetch, BtoT)
     ))
@@ -222,19 +207,11 @@ class CustomClientMetadata extends Bundle {
 
 
 
-
-
-
-
-
-
-
-
-
+/*
 // See LICENSE.SiFive for license details.
 // See LICENSE.Berkeley for license details.
 
-/*package freechips.rocketchip.tilelink
+package freechips.rocketchip.tilelink
 
 import Chisel._
 import freechips.rocketchip.rocket.constants.MemoryOpConstants
@@ -279,11 +256,10 @@ object CustomMemoryOpCategories extends MemoryOpConstants {
   }
 }
 
-*//** Stores the client-side coherence information,
-  * such as permissions on the data and whether the data is dirty.
-  * Its API can be used to make TileLink messages in response to
-  * memory operations, cache control oeprations, or Probe messages.
-  *//*
+  // Stores the client-side coherence information,
+  // such as permissions on the data and whether the data is dirty.
+  // Its API can be used to make TileLink messages in response to
+  // memory operations, cache control oeprations, or Probe messages.
 class CustomClientMetadata extends Bundle {
   // Actual state information stored in this bundle
   val state = UInt(width = CustomClientStates.width)
@@ -389,7 +365,13 @@ class CustomClientMetadata extends Bundle {
     assert(state =/= M)
     assert(state =/= E)
     assert(state =/= MI)
+    assert(state =/= EI)
     assert(state =/= SI)
+    assert(state =/= II)
+    assert(param =/= toB || state === IS)
+    assert(param === toB || param === toT)
+    assert(!(param === toT && state === IS))
+    assert(param =/= toT || state === IE || state === SE || state === IM || state === SM)
     
 
     MuxTLookup(Cat(state, param), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
@@ -434,8 +416,8 @@ class CustomClientMetadata extends Bundle {
   }
 
   def onCacheControl(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
-    *//*val r = onProbe(cmdToPermCap(cmd))
-    (r._1, r._2, r._3)*//*
+    //val r = onProbe(cmdToPermCap(cmd))
+    //(r._1, r._2, r._3)
     import CustomClientStates._
     import TLPermissions._
     val param = cmdToPermCap(cmd)
@@ -459,5 +441,4 @@ object CustomClientMetadata {
   }
   def onReset = CustomClientMetadata(CustomClientStates.I)
   def maximum = CustomClientMetadata(CustomClientStates.M)
-}
-*/
+}*/
