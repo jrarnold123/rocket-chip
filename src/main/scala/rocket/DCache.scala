@@ -215,7 +215,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val flushing_req = Reg(s1_req)
     val cached_grant_wait = Reg(init=Bool(false))
     val cached_grant_state = Reg(init=CustomClientMetadata(CustomClientStates.I))
-    val cached_grant_param = Reg(init=TLPermissions.NtoT)
     val resetting = RegInit(false.B)
     val flushCounter = Reg(init=UInt(nSets * (nWays-1), log2Ceil(nSets * nWays)))
     val release_ack_wait = Reg(init=Bool(false))
@@ -1135,14 +1134,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         //assert(!s2_hit_state.isStable()) Although the metadata will hold that value, grants don't trigger a metadata read
         sendEMessage(grantAck, d_first) //send a grantAck on the first cycle of the message
 
-        //jamesToDid, JamesToDo: THIS IS A TEMPORARY FIX, IT IS INCORRECT AND NEEDS TO BE INSPECTED
-        //when (cached_grant_param === TLPermissions.NtoB) {
-          //assert(cached_grant_state === CustomClientMetadata(CustomClientStates.IS))
-          //writeMetaGrant(cached_grant_state.onGrant(TLPermissions.toB))
-        //} .otherwise {
-          writeMetaGrant(cached_grant_state.onGrant(tl_out.d.bits.param))
-        //}
-        assert((tl_out.d.bits.param === TLPermissions.toB && cached_grant_param === TLPermissions.NtoB) || (tl_out.d.bits.param =/= TLPermissions.toB))
+        writeMetaGrant(cached_grant_state.onGrant(tl_out.d.bits.param))
         
         writeDataGrant() //update data with new data
       }
@@ -1183,7 +1175,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           assert(newPerm === TLPermissions.NtoT)
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
           cached_grant_state := s2_new_hit_state
-          cached_grant_param := newPerm
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1 //IM
           //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         } .elsewhen (s2_hit_state.hasWritePermission()._2) {
@@ -1197,13 +1188,11 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
             assert(newPerm === TLPermissions.BtoT)
             sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss)
             cached_grant_state := s2_new_hit_state
-            cached_grant_param := newPerm
             //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
           } .otherwise {
             //jamesToDo: verify that this doesn't happen
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
             cached_grant_state := s2_new_hit_state
-            cached_grant_param := TLPermissions.NtoT
           }
           
         } .otherwise {  //already has permissions, update state if necessary
@@ -1221,7 +1210,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss I->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
           cached_grant_state := s2_new_hit_state
-          cached_grant_param := newPerm
           //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         }.elsewhen (s2_hit_state.hasWritePermission()._2) {
           s1_nack := true
@@ -1232,7 +1220,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
           cached_grant_state := s2_new_hit_state
-          cached_grant_param := newPerm
           //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
         } .otherwise {
           s2_new_hit_state := s2_hit_state
@@ -1249,7 +1236,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
             sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss)
             s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
             cached_grant_state := s2_new_hit_state
-            cached_grant_param := newPerm
             //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
           } .otherwise {
             s1_nack := true
@@ -1356,7 +1342,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     def writeMetaGrant(newState: CustomClientMetadata) = { //updating metadata upon receiving new permissions
       val valid = grantIsCached && d_done && !tl_out.d.bits.denied
       assert(newState =/= CustomClientMetadata(CustomClientStates.I) || !valid)
-      //assert(cached_grant_param =/= TLPermissions.NtoB || newState === CustomClientMetadata(CustomClientStates.S))
       val write = true
       val way = Wire(Bits(width = nWays))
       way := refill_way
