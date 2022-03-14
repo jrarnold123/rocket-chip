@@ -788,6 +788,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
         assert(release_state =/= s_voluntary_ack_write_meta)
       }
 
+      when (s2_probe && s2_meta_error) {
+        release_state := s_probe_retry
+      }
+
     }
 
     // Drive APROT Bits (A channel)
@@ -1126,6 +1130,14 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_ack_wait := true // system must stall until releaseAck is received (starting as soon as release is sent)
           release_ack_addr := probe_bits.address //keep track of the address so that other blocks can be accessed in some cases
         }
+      } .elsewhen (s_probe_retry) {
+        metaArb.io.in(6).valid := true
+        metaArb.io.in(6).bits.idx := probeIdx(probe_bits)
+        metaArb.io.in(6).bits.addr := Cat(io.cpu.req.bits.addr >> paddrBits, probe_bits.address)
+        when (metaArb.io.in(6).ready) {
+          release_state := s_ready
+          s1_probe := true
+        }
       }
     }
     
@@ -1189,8 +1201,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       }
 
       //B Channel Inputs
-      when (s2_probe) { //when probeBlock reaches s2
-        assert(probe_bits.param =/= TLPermissions.toT)
+      when (s2_probe && !s2_meta_error) { //when probeBlock reaches s2
         assert(s2_probe_state.isStable())
         s1_nack := true //nacks the instruction to buy more time if we need to writeback, this is undone later in code when applicable
         when (s2_prb_ack_data) {
