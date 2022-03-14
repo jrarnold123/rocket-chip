@@ -1,213 +1,3 @@
-/*
-  Copyright (c) 2021.  Nicolai Oswald
-  Copyright (c) 2021.  University of Edinburgh
-  All rights reserved.
-
-  Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions are
-  met: redistributions of source code must retain the above copyright
-  notice, this list of conditions and the following disclaimer;
-  redistributions in binary form must reproduce the above copyright
-  notice, this list of conditions and the following disclaimer in the
-  documentation and/or other materials provided with the distribution;
-  neither the name of the copyright holders nor the names of its
-  contributors may be used to endorse or promote products derived from
-  this software without specific prior written permission.
-
-  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-  OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
-// See LICENSE.SiFive for license details.
-// See LICENSE.Berkeley for license details.
-
-package freechips.rocketchip.tilelink
-
-import Chisel._
-import freechips.rocketchip.rocket.constants.MemoryOpConstants
-import freechips.rocketchip.util._
-
-object CustomMemoryOpCategories extends MemoryOpConstants {
-  def wr = 1.U   // Op actually writes
-  def wi = 2.U  // Future op will write
-  def rd = 3.U // Op only reads
-
-  def categorize(cmd: UInt): UInt = {
-    //had to change this around... Operations that aren't wr or wi should NOT be classified rd
-    val out = Wire(UInt())
-    when (isWrite(cmd)) {
-      out := wr
-    } .elsewhen (isWriteIntent(cmd)) {
-      out := wi
-    } .elsewhen (isRead(cmd)) {
-      out := rd
-    } .otherwise {
-      out := 0.U
-    }
-    //assert(out.isOneOf(wr,wi,rd), "Could not categorize command.")
-    out
-  }
-}
-
-/** Factories for CustomClientMetadata, including on reset */
-object CustomClientMetadata {
-  def apply(perm: UInt) = {
-    val meta = Wire(new CustomClientMetadata)
-    meta.state := perm
-    meta
-  }
-  def onReset = CustomClientMetadata(CustomClientStates.I)
-  def maximum = CustomClientMetadata(CustomClientStates.M)
-}
-object CustomClientStates {
-  val width = 4
-  def S_storePrefetch  = UInt(1, width)
-  def S_store  = UInt(2, width)
-  def S_evict_x_I  = UInt(3, width)
-  def S_evict  = UInt(4, width)
-  def S  = UInt(5, width)
-  def M_evict_x_I  = UInt(6, width)
-  def M_evict  = UInt(7, width)
-  def M  = UInt(8, width)
-  def I_storePrefetch  = UInt(9, width)
-  def I_store  = UInt(10, width)
-  def I_load  = UInt(11, width)
-  def I  = UInt(0, width)
-
-}
-/** Stores the client-side coherence information,
-  * such as permissions on the data and whether the data is dirty.
-  * Its API can be used to make TileLink messages in response to
-  * memory operations, cache control oeprations, or Probe messages.
-  */
-class CustomClientMetadata extends Bundle {
-  /** Actual state information stored in this bundle */
-  val state = UInt(width = CustomClientStates.width)
-
-  /** Metadata equality */
-  def ===(rhs: UInt): Bool = state === rhs
-  def ===(rhs: CustomClientMetadata): Bool = state === rhs.state
-  def =/=(rhs: CustomClientMetadata): Bool = !this.===(rhs)
-
-  /** Translate cache control cmds into Probe param */
-  private def cmdToPermCap(cmd: UInt): UInt = {
-    import CustomMemoryOpCategories._
-    import TLPermissions._
-    MuxLookup(cmd, toN, Seq(
-      M_FLUSH   -> toN,
-      M_PRODUCE -> toB,
-      M_CLEAN   -> toT))
-  }
-
-  /** Is the block's data present in this cache */
-  def isValid(dummy: Int = 0): Bool = state =/= CustomClientStates.I
-
-  def isStable(): Bool = (state === CustomClientStates.S || state === CustomClientStates.M || state === CustomClientStates.I)
-  
-  def hasReadPermission(): (Bool, Bool) = {
-    import CustomClientStates._
-    MuxTLookup(state, (Bool(false),Bool(true)), Seq(
-      I_load    -> (Bool(false), Bool(true)),
-      S_storePrefetch    -> (Bool(false), Bool(true)),
-      M_evict    -> (Bool(false), Bool(true)),
-      S_evict    -> (Bool(false), Bool(true)),
-      I    -> (Bool(false), Bool(false)),
-      S_store    -> (Bool(false), Bool(true)),
-      S    -> (Bool(true), Bool(false)),
-      M_evict_x_I    -> (Bool(false), Bool(true)),
-      M    -> (Bool(true), Bool(false)),
-      I_storePrefetch    -> (Bool(false), Bool(true)),
-      S_evict_x_I    -> (Bool(false), Bool(true)),
-      I_store    -> (Bool(false), Bool(true))
-    ))
-  }
-  
-  def hasWritePermission(): (Bool, Bool) = {
-    import CustomClientStates._
-    MuxTLookup(state, (Bool(false), Bool(true)), Seq(
-      I_load    -> (Bool(false), Bool(true)),
-      S_storePrefetch    -> (Bool(false), Bool(true)),
-      M_evict    -> (Bool(false), Bool(true)),
-      S_evict    -> (Bool(false), Bool(true)),
-      I    -> (Bool(false), Bool(false)),
-      S_store    -> (Bool(false), Bool(true)),
-      S    -> (Bool(false), Bool(false)),
-      M_evict_x_I    -> (Bool(false), Bool(true)),
-      M    -> (Bool(true), Bool(false)),
-      I_storePrefetch    -> (Bool(false), Bool(true)),
-      S_evict_x_I    -> (Bool(false), Bool(true)),
-      I_store    -> (Bool(false), Bool(true))
-    ))
-  }
-  /** Metadata change on a returned Grant */
-  def onGrant(param: UInt): CustomClientMetadata = {
-    import TLPermissions._
-    import CustomClientStates._
-    
-    MuxTLookup(Cat(state, param), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      Cat(I_load, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
-      Cat(I_load, toB)  ->  (Bool(false), UInt(0), CustomClientMetadata(S)),
-      Cat(S_storePrefetch, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
-      Cat(S_store, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
-      Cat(I_storePrefetch, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M)),
-      Cat(I_store, toT)  ->  (Bool(false), UInt(0), CustomClientMetadata(M))
-    ))._3
-  }
-  def onWrite(): CustomClientMetadata = {
-    val temp = CustomClientMetadata(CustomClientStates.I)
-    temp := CustomClientMetadata(state)
-    temp
-  }
-  def onCacheControl(cmd: UInt): (Bool, UInt, CustomClientMetadata) = {
-    import CustomClientStates._
-    import TLPermissions._
-    val param = cmdToPermCap(cmd)
-    MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      Cat(toN, S)    ->  (Bool(false), BtoN, CustomClientMetadata(S_evict)),
-      Cat(toN, M)    ->  (Bool(true), TtoN, CustomClientMetadata(M_evict))
-    ))
-  }
-  def onProbe(param: UInt): (Bool, UInt, CustomClientMetadata) = {
-    import TLPermissions._
-    import CustomClientStates._
-    MuxTLookup(Cat(param, state), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
-      Cat(toN, I)  ->  (Bool(false), NtoN, CustomClientMetadata(I)),
-      Cat(toB, I)  ->  (Bool(false), NtoN, CustomClientMetadata(I)),
-      Cat(toB, S)  ->  (Bool(false), BtoB, CustomClientMetadata(S)),
-      Cat(toN, S)  ->  (Bool(false), BtoN, CustomClientMetadata(I)),
-      Cat(toN, M)  ->  (Bool(true), TtoN, CustomClientMetadata(I)),
-      Cat(toB, M)  ->  (Bool(true), TtoB, CustomClientMetadata(S))
-    ))
-  }
-  def onMiss(cmd: UInt): (CustomClientMetadata, UInt) = {
-    import TLPermissions._
-    import CustomClientStates._
-    import CustomMemoryOpCategories._
-    
-    val c = categorize(cmd)
-    
-    val out = MuxTLookup(Cat(c, state), (UInt(0), UInt(0)), Seq(
-      Cat(wr, I)    ->  (I_store, NtoT),
-      Cat(wi, I)    ->  (I_storePrefetch, NtoT),
-      Cat(rd, I)    ->  (I_load, NtoT), 
-      Cat(wr, S)    ->  (S_store, BtoT),
-      Cat(wi, S)    ->  (S_storePrefetch, BtoT)
-    ))
-    (CustomClientMetadata(out._1), out._2)
-  }
-}
-
-
-
-/*
 // See LICENSE.SiFive for license details.
 // See LICENSE.Berkeley for license details.
 
@@ -369,9 +159,6 @@ class CustomClientMetadata extends Bundle {
     assert(state =/= SI)
     assert(state =/= II)
     assert(param =/= toB || state === IS)
-    assert(param === toB || param === toT)
-    assert(!(param === toT && state === IS))
-    assert(param =/= toT || state === IE || state === SE || state === IM || state === SM)
     
 
     MuxTLookup(Cat(state, param), (Bool(false), UInt(0), CustomClientMetadata(I)), Seq(
@@ -380,7 +167,8 @@ class CustomClientMetadata extends Bundle {
       Cat(SE, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(E)),
       Cat(IM, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(M)),
       Cat(SM, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(M)),
-      Cat(IS, toB)     ->      (Bool(false), UInt(0), CustomClientMetadata(S))
+      Cat(IS, toB)     ->      (Bool(false), UInt(0), CustomClientMetadata(S)),
+      Cat(IS, toT)     ->      (Bool(false), UInt(0), CustomClientMetadata(M))
     ))._3
     
     
@@ -441,4 +229,4 @@ object CustomClientMetadata {
   }
   def onReset = CustomClientMetadata(CustomClientStates.I)
   def maximum = CustomClientMetadata(CustomClientStates.M)
-}*/
+}
