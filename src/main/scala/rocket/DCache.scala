@@ -686,7 +686,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       tl_out.d.ready := false
     }
     if (usingDataScratchpad) {
-      //jamesTODO: can be deleted
       dataArb.io.in(1).valid := tl_out.d.valid && grantIsRefill && canAcceptCachedGrant
       dataArb.io.in(1).bits := dataArb.io.in(0).bits
     }
@@ -694,6 +693,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     // Handle an incoming TileLink Probe message
     val block_probe_for_core_progress = blockProbeAfterGrantCount > 0 || lrscValid
     //JamesToDo: this is an aggressive stalling policy.  The issue is that releases rely on probe_bits holding onto the address, but if a probe comes in then we need to store elsewhere.  MetaArb.4 should be able to take release_ack_addr as possible addr
+    // Ideally we could uncomment the below to allow releases on different blocks to proceed, but that would overwrite the address in probe_bits
     val block_probe_for_pending_release_ack = release_ack_wait// && (tl_out.b.bits.address ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0
     val block_probe_for_ordering = releaseInFlight || block_probe_for_pending_release_ack || grantInProgress || s2_probe_stall || s2_probe_stall_latch
 
@@ -737,7 +737,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     val releaseDataMessage = edge.Release(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes, shrinkPermissions = s2_shrink_param, data = 0.U)._2
 
 
-    // JamesTODO: CONSIDER DELETING THIS IN FAVOR OF THE OTHERWISE STATEMENT IN FSM
     val newCoh = Wire(init = probeNewCoh)
     releaseWay := s2_probe_way
 
@@ -1130,8 +1129,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           release_ack_wait := true // system must stall until releaseAck is received (starting as soon as release is sent)
           release_ack_addr := probe_bits.address //keep track of the address so that other blocks can be accessed in some cases
         }
-      } .elsewhen (s_probe_retry) {
-        metaArb.io.in(6).valid := true
+      } .elsewhen (release_state === s_probe_retry) {
         metaArb.io.in(6).bits.idx := probeIdx(probe_bits)
         metaArb.io.in(6).bits.addr := Cat(io.cpu.req.bits.addr >> paddrBits, probe_bits.address)
         when (metaArb.io.in(6).ready) {
@@ -1220,7 +1218,6 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       //CPU Inputs
       val newState = Wire(CustomClientMetadata(UInt(15)))
       val newPerm = Wire(UInt(15))
-      assert(s2_new_hit_state =/= CustomClientMetadata(UInt(15)))
       s2_new_hit_state := CustomClientMetadata(CustomClientStates.I)
 
       when (CPUWrite && !s2_uncached) {
@@ -1231,13 +1228,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss, I->E
           cached_grant_state := s2_new_hit_state
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1 //IM
-          //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IM))
         } .elsewhen (s2_hit_state.hasWritePermission()._2) {
           s1_nack := true 
-        } .elsewhen (!s2_hit_state.hasWritePermission()._1) { //is valid and doesnt have to stall but doesn't have permissions
-          //assert(s2_hit_state === CustomClientMetadata(CustomClientStates.S))
-          when (s2_hit_state.hasReadPermission()._1) { //jamesToDo: remove this
-            //assert(s2_hit_state === CustomClientMetadata(CustomClientStates.S))
+        } .elsewhen (!s2_hit_state.hasWritePermission()._1) { //is valid and doesnt have to stall but doesn't have permissions, should request and update state to transient
+          when (s2_hit_state.hasReadPermission()._1) { //jamesToDo: remove this if statement; it shouldn't matter now that onMiss is correctly implemented
             s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1 //SM
             newPerm := s2_hit_state.onMiss(s2_req.cmd)._2
             assert(newPerm === TLPermissions.BtoT)
@@ -1245,14 +1239,13 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
             cached_grant_state := s2_new_hit_state
             //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
           } .otherwise {
-            //jamesToDo: verify that this doesn't happen
+            //jamesToDo: verify that this doesn't happen (related to the above JamesToDo)
             sendAMessage(acquire(s2_req.addr, TLPermissions.NtoT), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
             cached_grant_state := s2_new_hit_state
           }
           
         } .otherwise {  //already has permissions, update state if necessary
-          //jamesToDo: what about hitting on O?  notifyL2
-          //assert(s2_hit_state === CustomClientMetadata(CustomClientStates.M) || s2_hit_state === CustomClientMetadata(CustomClientStates.E))
+          //jamesToDo: what about hitting on O?  notify the L2... this is not currently supported by the L2 so I haven't implemented it, but once L2 is modified/flexible then we can implement O state into the protocols
           s2_new_hit_state := s2_hit_state.onWrite()
           assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.M))
           writeMetaHit(s2_new_hit_state) //jamesToDo: remove this line, it's unnecessary (I hope?)
@@ -1275,23 +1268,19 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
           sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss) //miss S->E
           s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
           cached_grant_state := s2_new_hit_state
-          //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.SM))
         } .otherwise {
           s2_new_hit_state := s2_hit_state
         }
       } .elsewhen (CPURead && !s2_uncached) {
         assert(!isWrite(s2_req.cmd) && !isWriteIntent(s2_req.cmd))
-        when (s2_hit_state.hasReadPermission()._2) {
+        when (s2_hit_state.hasReadPermission()._2) { //must stall on a read
           s1_nack := true
         } .elsewhen (!s2_hit_state.hasReadPermission()._1) { //We only need to send a message if we miss... misses on Reads are only I
-          //assert(s2_hit_state === CustomClientMetadata(CustomClientStates.I))
-          when (!cached_grant_wait) { //jamesToDo: is this if necessary?
+          when (!cached_grant_wait) { //jamesToDo: is this if necessary?  We shouldn't get here in the first place if cached_grant_wait
             newPerm := s2_hit_state.onMiss(s2_req.cmd)._2
-            //assert(newPerm === TLPermissions.NtoB)
             sendAMessage(acquire(s2_req.addr, newPerm), !io.cpu.s2_kill && !s2_victim_dirty && !(release_ack_wait && (s2_req.addr ^ release_ack_addr)(((pgIdxBits + pgLevelBits) min paddrBits) - 1, idxLSB) === 0) && s2_valid_cached_miss)
             s2_new_hit_state := s2_hit_state.onMiss(s2_req.cmd)._1
             cached_grant_state := s2_new_hit_state
-            //assert(s2_new_hit_state === CustomClientMetadata(CustomClientStates.IS))
           } .otherwise {
             s1_nack := true
           }
@@ -1417,7 +1406,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       writeMetaHelper(addr, probeWay, index, probeData, write, valid, 4.U)
     }
     def readMetaProbe() = { //reading metadata to determine what action is necessary for probe
-      val valid = (tl_out.b.valid && (!block_probe_for_core_progress || lrscBackingOff))
+      val valid = (tl_out.b.valid && (!block_probe_for_core_progress || lrscBackingOff)) || release_state === s_probe_retry
       val write = false
       val index = probeIdx(tl_out.b.bits)
       val addr = Cat(io.cpu.req.bits.addr >> paddrBits, tl_out.b.bits.address)

@@ -5,7 +5,6 @@ endif
 
 MODEL ?= TestHarness
 PROJECT ?= freechips.rocketchip.system
-#JamesToDid: change above to groundtest
 CFG_PROJECT ?= $(PROJECT)
 CONFIG ?= $(CFG_PROJECT).DefaultConfig
 # TODO: For now must match rocketchip.Generator
